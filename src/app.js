@@ -1,0 +1,907 @@
+import {
+  inTauri, loadSettings, saveSettings, store, openUrl, currentWindow,
+  signIn, signOut, signedIn, sessionEmail,
+  fetchWeather, searchPlaces, fetchTasks, setTaskDone,
+  fetchRecipeIndex, fetchSections, fetchFavorites, fetchBriefing,
+  fetchSky, fetchJobs, updateJob, vaultInfo, appendNote, momentFormat,
+  esc, localDateKey, parseDay, hash,
+  KITCHEN_URL, BLOGPLAN_URL, PICKET_URL,
+} from './api.js';
+import { weatherInfo, ui } from './icons.js';
+import { sunTimes, moonIllumination, moonTimes, phaseName, moonSvg, colorOutlook } from './sky.js';
+
+const JOBTRACKER_URL = 'https://darthdan.vpages.site/job-tracker/';
+
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+
+let settings = loadSettings();
+const state = {
+  recipes: [], sections: [], favorites: new Set(),
+  briefing: null, stories: [], newsIdx: 0,
+  sky: null, jobs: null, vault: null,
+  last: { weather: 0, light: 0, blog: 0, jobs: 0, recipe: 0, news: 0 },
+  day: localDateKey(),
+};
+
+const WEEKDAY = new Intl.DateTimeFormat(undefined, { weekday: 'short' });
+const MONTHDAY = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
+const TODAY_FMT = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+
+/* ================= boot ================= */
+
+function initChrome() {
+  $('#btn-refresh').innerHTML = ui.refresh;
+  $('#btn-settings').innerHTML = ui.gear;
+  $('#btn-hide').innerHTML = ui.hide;
+  $('#btn-shuffle').innerHTML = ui.shuffle;
+  $('#btn-news-prev').innerHTML = ui.prev;
+  $('#btn-news-next').innerHTML = ui.next;
+  $('#btn-close-settings').innerHTML = ui.close;
+
+  $('#btn-refresh').addEventListener('click', () => refreshAll(true));
+  $('#btn-settings').addEventListener('click', openSettings);
+  $('#btn-close-settings').addEventListener('click', closeSettings);
+  $('#btn-hide').addEventListener('click', () => {
+    const w = currentWindow();
+    if (w) w.hide();
+  });
+  $('#btn-shuffle').addEventListener('click', shuffleRecipe);
+  $('#btn-news-prev').addEventListener('click', () => stepNews(-1));
+  $('#btn-news-next').addEventListener('click', () => stepNews(1));
+
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-open]');
+    if (!t) return;
+    const map = { blogplan: BLOGPLAN_URL, kitchen: KITCHEN_URL, picket: PICKET_URL, jobtracker: JOBTRACKER_URL };
+    openUrl(map[t.dataset.open] || t.dataset.open);
+  });
+  document.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('input, textarea')) e.preventDefault();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('#sheet').hidden) closeSettings();
+    if (e.key === 'F5') { e.preventDefault(); refreshAll(true); }
+  });
+  window.addEventListener('focus', tick);
+
+  if (inTauri) {
+    window.__TAURI__.event.listen('tray-action', (e) => {
+      if (e.payload === 'refresh') refreshAll(true);
+      if (e.payload === 'settings') openSettings();
+    });
+  }
+}
+
+function applyLook() {
+  document.documentElement.style.setProperty('--glass', settings.opacity);
+  $('#card-weather').hidden = !settings.show.weather;
+  $('#card-light').hidden = !settings.show.light;
+  $('#card-note').hidden = !settings.show.note;
+  $('#card-jobs').hidden = !settings.show.jobs;
+  $('#card-blog').hidden = !settings.show.blog;
+  $('#card-recipe').hidden = !settings.show.recipe;
+  $('#card-news').hidden = !settings.show.news;
+  $('#today').textContent = TODAY_FMT.format(new Date());
+}
+
+async function applyWindowMode() {
+  const w = currentWindow();
+  if (!w) return;
+  try {
+    if (settings.windowMode === 'top') {
+      await w.setAlwaysOnBottom(false);
+      await w.setAlwaysOnTop(true);
+    } else if (settings.windowMode === 'bottom') {
+      await w.setAlwaysOnTop(false);
+      await w.setAlwaysOnBottom(true);
+    } else {
+      await w.setAlwaysOnTop(false);
+      await w.setAlwaysOnBottom(false);
+    }
+  } catch (e) { console.warn('window mode', e); }
+}
+
+/* ================= refresh loop ================= */
+
+async function refreshAll(manual = false) {
+  const btn = $('#btn-refresh');
+  btn.classList.add('spin');
+  const jobs = [];
+  if (settings.show.weather) jobs.push(loadWeather());
+  if (settings.show.light) jobs.push(loadLight());
+  if (settings.show.jobs) jobs.push(loadJobs());
+  if (settings.show.blog) jobs.push(loadBlog());
+  if (settings.show.recipe) jobs.push(loadRecipes());
+  if (settings.show.news) jobs.push(loadNews());
+  await Promise.allSettled(jobs);
+  btn.classList.remove('spin');
+  $('#foot').textContent = `Updated ${TIME_FMT.format(new Date())}`;
+  if (manual) applyLook();
+}
+
+const MIN = 60_000;
+function tick() {
+  const now = Date.now();
+  const today = localDateKey();
+  if (today !== state.day) {
+    state.day = today;
+    applyLook();
+    refreshAll();
+    return;
+  }
+  if (settings.show.weather && now - state.last.weather > 15 * MIN) loadWeather();
+  if (settings.show.light && now - state.last.light > 30 * MIN) loadLight();
+  else if (settings.show.light) renderLight(); // keep "this evening / tomorrow" current
+  if (settings.show.jobs && now - state.last.jobs > 15 * MIN) loadJobs();
+  if (settings.show.blog && now - state.last.blog > 10 * MIN) loadBlog();
+  if (settings.show.news && now - state.last.news > 30 * MIN) loadNews();
+  if (settings.show.recipe && now - state.last.recipe > 6 * 60 * MIN) loadRecipes();
+  $('#foot').textContent = `Updated ${TIME_FMT.format(new Date())}`;
+}
+
+/* ================= weather ================= */
+
+function clock(isoLocal) {
+  // Open-Meteo returns local wall-clock time ("2026-11-21T17:22") for timezone=auto.
+  const [h, m] = isoLocal.slice(11, 16).split(':').map(Number);
+  const d = new Date(2000, 0, 1, h, m);
+  return TIME_FMT.format(d);
+}
+
+async function loadWeather() {
+  const el = $('#card-weather');
+  try {
+    const w = await fetchWeather(settings.location, settings.units);
+    state.last.weather = Date.now();
+    const c = w.current, d = w.daily;
+    const now = weatherInfo(c.weather_code, c.is_day);
+    const afterSunset = c.time > d.sunset[0];
+    const sunLine = afterSunset && d.sunrise[1]
+      ? `<span>${ui.sunset}Sunrise ${clock(d.sunrise[1])}</span>`
+      : `<span class="golden">${ui.sunset}Sunset ${clock(d.sunset[0])}</span>`;
+    const windUnit = settings.units === 'C' ? 'km/h' : 'mph';
+
+    const days = [1, 2, 3].map((i) => {
+      const info = weatherInfo(d.weather_code[i], 1);
+      const p = d.precipitation_probability_max?.[i];
+      return `<div class="wx-day" title="${esc(info.label)}">
+        <div class="d">${esc(WEEKDAY.format(parseDay(d.time[i])))}</div>
+        ${info.icon}
+        <div class="t"><b>${Math.round(d.temperature_2m_max[i])}°</b><i>${Math.round(d.temperature_2m_min[i])}°</i></div>
+        <div class="p">${p >= 20 ? `${p}% rain` : ''}</div>
+      </div>`;
+    }).join('');
+
+    el.innerHTML = `
+      <div class="wx-now">
+        <div class="wx-temp">${Math.round(c.temperature_2m)}<sup>°${settings.units}</sup></div>
+        <div class="wx-big">${now.icon}</div>
+        <div class="wx-cond">${esc(now.label)} · H ${Math.round(d.temperature_2m_max[0])}° L ${Math.round(d.temperature_2m_min[0])}°</div>
+        <div class="wx-place">${esc(settings.location.name)}</div>
+      </div>
+      <div class="wx-meta">
+        <span>Feels ${Math.round(c.apparent_temperature)}°</span>
+        <span>${ui.wind}${Math.round(c.wind_speed_10m)} ${windUnit}</span>
+        <span>${ui.drop}${Math.round(c.relative_humidity_2m)}%</span>
+        ${sunLine}
+      </div>
+      <div class="wx-days">${days}</div>`;
+    $('.wx-big svg', el)?.setAttribute('style', 'width:64px;height:64px');
+  } catch (e) {
+    el.innerHTML = `<div class="placeholder">Weather unavailable right now. It will retry shortly.</div>`;
+    state.last.weather = Date.now() - 12 * MIN; // retry in ~3 minutes
+  }
+}
+
+/* ================= light ================= */
+
+async function loadLight() {
+  try {
+    state.sky = await fetchSky(settings.location);
+    state.last.light = Date.now();
+    renderLight();
+  } catch {
+    if (!state.sky) $('#light-body').innerHTML = `<div class="placeholder">Sky forecast unavailable. It will retry shortly.</div>`;
+    state.last.light = Date.now() - 25 * MIN;
+  }
+}
+
+function renderLight() {
+  const w = state.sky;
+  if (!w) return;
+  const { lat, lon } = settings.location;
+  const off = w.utc_offset_seconds * 1000;
+  const tz = w.timezone;
+  const tf = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: tz });
+  const wd = new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: tz });
+  const t = (d) => (d && !isNaN(d) ? tf.format(d) : '—');
+  const r = (a, b) => (a && b && !isNaN(a) && !isNaN(b) ? tf.formatRange(a, b) : '—');
+
+  // Calendar day at the location, independent of this PC's clock zone.
+  const shifted = new Date(Date.now() + off);
+  const Y = shifted.getUTCFullYear(), Mo = shifted.getUTCMonth(), D = shifted.getUTCDate();
+  const atLocal = (k, h = 12) => new Date(Date.UTC(Y, Mo, D + k, h) - off);
+  const A = [-0.833, 6, -4, -6];
+  const today = sunTimes(atLocal(0), lat, lon, A);
+  const tomorrow = sunTimes(atLocal(1), lat, lon, A);
+  const now = Date.now();
+
+  const morning = now < today[6].rise ? { s: today, label: 'This morning' } : { s: tomorrow, label: 'Tomorrow AM' };
+  const evening = now < today[-6].set ? { s: today, label: 'This evening' } : { s: tomorrow, label: 'Tomorrow PM' };
+  const mRow = `<div class="k">${morning.label}</div><div class="v">
+      <div class="blue">Blue ${r(morning.s[-6].rise, morning.s[-4].rise)}</div>
+      <div class="gold">Golden ${r(morning.s[-4].rise, morning.s[6].rise)}</div></div>`;
+  const eRow = `<div class="k">${evening.label}</div><div class="v">
+      <div class="gold">Golden ${r(evening.s[6].set, evening.s[-4].set)}</div>
+      <div class="blue">Blue ${r(evening.s[-4].set, evening.s[-6].set)}</div></div>`;
+  const morningFirst = morning.s[6].rise < evening.s[-6].set;
+
+  // Color outlook for the next sunrise or sunset.
+  const candidates = [
+    { kind: 'sunset', when: today[-0.833].set, day: 'Tonight' },
+    { kind: 'sunrise', when: tomorrow[-0.833].rise, day: 'Tomorrow' },
+    { kind: 'sunset', when: tomorrow[-0.833].set, day: 'Tomorrow' },
+  ];
+  if (now < today[-0.833].rise) candidates.unshift({ kind: 'sunrise', when: today[-0.833].rise, day: 'This morning' });
+  const ev = candidates.find((c) => c.when > now - 20 * MIN) || candidates[candidates.length - 1];
+  const hourKey = new Date(ev.when.valueOf() + off + 30 * MIN).toISOString().slice(0, 13);
+  const hi = w.hourly.time.findIndex((x) => x.startsWith(hourKey));
+  let outlook = '';
+  if (hi >= 0) {
+    const H = w.hourly;
+    const lo = H.cloud_cover_low[hi], mid = H.cloud_cover_mid[hi], high = H.cloud_cover_high[hi], tot = H.cloud_cover[hi];
+    const o = colorOutlook(lo, mid, high, tot);
+    outlook = `<div class="outlook">
+      <div class="outlook-top"><b>${esc(ev.day)}'s ${ev.kind} · ${t(ev.when)}</b><span>${o.score}</span></div>
+      <div class="meter"><i style="width:${o.score}%"></i></div>
+      <div>${esc(o.label)}</div>
+      <small>Clouds: high ${high}% · mid ${mid}% · low ${lo}%. A rough estimate from the forecast.</small>
+    </div>`;
+  }
+
+  // Moon now, today's rise/set, and the next full or new moon.
+  const ill = moonIllumination(new Date());
+  const mt = moonTimes(atLocal(0, 0), lat, lon);
+  const riseSet = [['Rises', mt.rise], ['Sets', mt.set]].filter(([, d]) => d).sort((a, b) => a[1] - b[1])
+    .map(([k, d]) => `${k} ${t(d)}`).join(' · ') || 'Up all day or down all day';
+  let next = '';
+  let prev = ill.phase;
+  for (let h = 6; h <= 24 * 31; h += 6) {
+    const p = moonIllumination(new Date(now + h * 36e5)).phase;
+    if (prev < 0.5 && p >= 0.5) { next = `Full moon ${wd.format(new Date(now + h * 36e5))}${h > 24 * 6 ? ' ' + MONTHDAY.format(new Date(now + h * 36e5)) : ''}`; break; }
+    if (prev > 0.9 && p < 0.1) { next = `New moon ${wd.format(new Date(now + h * 36e5))}${h > 24 * 6 ? ' ' + MONTHDAY.format(new Date(now + h * 36e5)) : ''}`; break; }
+    prev = p;
+  }
+
+  // Best night for stars in the forecast: least cloud, least moon (9 PM to 3 AM).
+  const H = w.hourly;
+  let best = null;
+  for (let k = 0; k < 6; k++) {
+    const keys = [21, 22, 23].map((h) => new Date(Date.UTC(Y, Mo, D + k, h)).toISOString().slice(0, 13))
+      .concat([0, 1, 2, 3].map((h) => new Date(Date.UTC(Y, Mo, D + k + 1, h)).toISOString().slice(0, 13)));
+    const vals = keys.map((key) => H.time.findIndex((x) => x.startsWith(key))).filter((i) => i >= 0).map((i) => H.cloud_cover[i]);
+    if (vals.length < 4) continue;
+    const cloud = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const moon = moonIllumination(atLocal(k, 23)).fraction;
+    const score = (100 - cloud) * (1 - 0.75 * moon);
+    if (!best || score > best.score) best = { k, cloud, moon, score };
+  }
+  let stars = '';
+  if (best && best.cloud <= 60) {
+    const day = best.k === 0 ? 'Tonight' : best.k === 1 ? 'Tomorrow' : wd.format(atLocal(best.k));
+    stars = `<div class="lt-stars">Best night for stars: <b>${esc(day)}</b> · ${Math.round(best.cloud)}% cloud · moon ${Math.round(best.moon * 100)}%</div>`;
+  } else if (best) {
+    stars = `<div class="lt-stars">No clear nights in the forecast this week.</div>`;
+  }
+
+  $('#light-title').textContent = `Light · ${settings.location.name.split(',')[0]}`;
+  $('#light-body').innerHTML = `
+    <div class="lt-rows">${morningFirst ? mRow + eRow : eRow + mRow}</div>
+    ${outlook}
+    <div class="lt-moon">${moonSvg(ill.phase)}
+      <div><b>${phaseName(ill.phase)} · ${Math.round(ill.fraction * 100)}%</b>
+      <div>${esc(riseSet)}${next ? ` · ${esc(next)}` : ''}</div></div>
+    </div>
+    ${stars}`;
+}
+
+/* ================= quick note (Obsidian) ================= */
+
+async function currentVault() {
+  if (state.vault && state.vault.path === settings.obsidian.vault) return state.vault.info;
+  const info = await vaultInfo(settings.obsidian.vault);
+  state.vault = { path: settings.obsidian.vault, info };
+  return info;
+}
+
+function noteLine(text) {
+  const now = new Date();
+  const [first, ...rest] = text.split(/\r?\n/);
+  const style = settings.obsidian.style;
+  const head = style === 'task' ? `- [ ] ${first}`
+    : style === 'time' ? `- ${momentFormat('HH:mm', now)} ${first}`
+    : `- ${first}`;
+  return [head, ...rest.map((l) => `  ${l}`)].join('\n');
+}
+
+function syncNoteTarget() {
+  $$('#note-target button').forEach((b) => b.classList.toggle('on', b.dataset.value === settings.obsidian.target));
+}
+
+async function addNote() {
+  const box = $('#note-text');
+  const status = $('#note-status');
+  const text = box.value.trim();
+  if (!text) return;
+  status.className = 'note-status';
+  status.textContent = 'Adding…';
+  try {
+    const info = await currentVault();
+    let note;
+    if (settings.obsidian.target === 'daily') {
+      const name = momentFormat(info.daily_format || 'YYYY-MM-DD');
+      note = info.daily_folder ? `${info.daily_folder}/${name}` : name;
+    } else {
+      note = settings.obsidian.inbox || 'Inbox.md';
+    }
+    const rel = await appendNote(settings.obsidian.vault, note, noteLine(text));
+    box.value = '';
+    autosize(box);
+    status.className = 'note-status ok';
+    status.innerHTML = `Added to ${esc(rel)}<button id="note-open">Open in Obsidian</button>`;
+    $('#note-open').addEventListener('click', () => openUrl(
+      `obsidian://open?vault=${encodeURIComponent(info.name)}&file=${encodeURIComponent(rel.replace(/\.md$/i, ''))}`));
+  } catch (e) {
+    status.className = 'note-status err';
+    status.textContent = String(e?.message || e);
+  }
+}
+
+function autosize(el) {
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight + 2, 120)}px`;
+}
+
+function initNote() {
+  syncNoteTarget();
+  $('#note-target').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    settings.obsidian.target = b.dataset.value;
+    persist();
+    syncNoteTarget();
+  });
+  const box = $('#note-text');
+  box.addEventListener('input', () => autosize(box));
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addNote(); }
+  });
+  $('#note-add').addEventListener('click', addNote);
+}
+
+/* ================= job search ================= */
+
+const dayDiff = (a, b) => Math.round((parseDay(a) - parseDay(b)) / 86_400_000);
+function dropDay(found) {
+  const d = parseDay(found);
+  return localDateKey(new Date(d.getFullYear(), d.getMonth() + 1, d.getDate()));
+}
+function isDropped(j, today) {
+  return !j.applied && j.found && today > dropDay(j.found) && !(j.notes || '').includes('[Kept open');
+}
+
+async function loadJobs() {
+  const body = $('#jobs-body');
+  const cfg = settings.jobs;
+  if (!cfg.url || !cfg.key) {
+    body.innerHTML = `<div class="signin-cta"><span>Connect your Job Tracker to see what needs you today.</span>
+      <button class="btn primary" id="jobs-connect">Connect</button></div>`;
+    $('#jobs-connect').addEventListener('click', openSettings);
+    return;
+  }
+  try {
+    state.jobs = await fetchJobs(cfg);
+    state.last.jobs = Date.now();
+    renderJobs();
+  } catch (e) {
+    body.innerHTML = `<div class="placeholder">${esc(e.message || 'Couldn\'t reach the Job Tracker')}. It will retry shortly.</div>`;
+    state.last.jobs = Date.now() - 12 * MIN;
+  }
+}
+
+function renderJobs() {
+  const body = $('#jobs-body');
+  const today = localDateKey();
+  const open = (state.jobs || []).filter((j) => !j.closed && !isDropped(j, today));
+  const starred = open.filter((j) => j.starred);
+  const fresh = open.filter((j) => j.found && dayDiff(today, j.found) <= 7);
+  const applied = open.filter((j) => j.applied);
+
+  const apply = starred.filter((j) => !j.applied)
+    .sort((a, b) => (a.found || '').localeCompare(b.found || ''))
+    .slice(0, 4);
+
+  const follow = [];
+  for (const j of applied) {
+    if (j.interviewed) {
+      const n = dayDiff(today, j.interviewed);
+      follow.push({ j, n, note: n <= 7 ? `Interviewed ${n}d ago · send a thank-you` : `Interviewed ${n}d ago · ask about next steps` });
+    } else if (j.callback) {
+      follow.push({ j, n: dayDiff(today, j.callback), note: 'Callback · set up the interview' });
+    } else {
+      const n = dayDiff(today, j.applied);
+      if (n >= 7) follow.push({ j, n, note: `Applied ${n}d ago · follow up` });
+    }
+  }
+  follow.sort((a, b) => b.n - a.n);
+
+  const item = (j, side, sub) => `<div class="jb" data-id="${esc(j.id)}">
+      <div class="t" data-url="${esc(j.url || '')}">${j.starred ? '<span class="star">★</span>' : ''}${esc(j.title)}</div>
+      <div class="side">${side}</div>
+      <div class="c">${esc(sub)}</div>
+    </div>`;
+
+  const applyHtml = apply.map((j) => {
+    const left = dayDiff(dropDay(j.found), today);
+    const chip = left <= 7
+      ? `<span class="due ${left <= 2 ? 'late' : 'soon'}">${left <= 0 ? 'drops today' : left === 1 ? 'drops tomorrow' : `drops in ${left}d`}</span>`
+      : '';
+    return item(j, `${chip}<button class="mini-btn" data-applied="${esc(j.id)}">Applied</button>`,
+      [j.company, j.pay && j.pay !== 'Not listed' ? j.pay : ''].filter(Boolean).join(' · '));
+  }).join('');
+  const followHtml = follow.slice(0, 3).map(({ j, note }) => item(j, '', `${j.company} · ${note}`)).join('');
+
+  body.innerHTML = `
+    <div class="jb-stats">
+      <span><b>${open.length}</b>open</span><span><b>${starred.length}</b>starred</span>
+      <span><b>${fresh.length}</b>new this week</span><span><b>${applied.length}</b>applied</span>
+    </div>
+    ${applyHtml ? `<div class="jb-group">Apply today</div>${applyHtml}` : ''}
+    ${followHtml ? `<div class="jb-group">Follow up</div>${followHtml}` : ''}
+    ${!applyHtml && !followHtml ? '<div class="empty">Nothing needs you today. Star a req in the tracker to see it here.</div>' : ''}`;
+
+  $$('.jb .t', body).forEach((el) => el.addEventListener('click', () => el.dataset.url && openUrl(el.dataset.url)));
+  $$('[data-applied]', body).forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    b.textContent = 'Saving…';
+    try {
+      await updateJob(settings.jobs, b.dataset.applied, { applied: localDateKey() });
+      const j = state.jobs.find((x) => x.id === b.dataset.applied);
+      if (j) j.applied = localDateKey();
+      renderJobs();
+    } catch (e) {
+      b.disabled = false;
+      b.textContent = 'Retry';
+      b.title = e.message;
+    }
+  }));
+}
+
+/* ================= blog plan ================= */
+
+function dueChip(due) {
+  if (!due) return '';
+  const today = parseDay(localDateKey());
+  const dd = parseDay(due);
+  const diff = Math.round((dd - today) / 86_400_000);
+  if (diff < 0) return `<span class="due late">${diff === -1 ? 'Yesterday' : `${-diff}d late`}</span>`;
+  if (diff === 0) return `<span class="due today">Today</span>`;
+  if (diff === 1) return `<span class="due soon">Tomorrow</span>`;
+  if (diff < 7) return `<span class="due ${diff <= 3 ? 'soon' : ''}">${esc(WEEKDAY.format(dd))}</span>`;
+  return `<span class="due">${esc(MONTHDAY.format(dd))}</span>`;
+}
+
+const check = `<svg viewBox="0 0 12 12"><path d="M2.5 6.2l2.3 2.3 4.7-5"/></svg>`;
+
+async function loadBlog() {
+  const body = $('#blog-body');
+  if (!signedIn()) {
+    body.innerHTML = `<div class="signin-cta"><span>Sign in to see your next posting tasks.</span>
+      <button class="btn primary" id="blog-signin">Sign in</button></div>`;
+    $('#blog-signin').addEventListener('click', openSettings);
+    return;
+  }
+  try {
+    const tasks = await fetchTasks(settings.taskCount);
+    state.last.blog = Date.now();
+    if (!tasks.length) {
+      body.innerHTML = `<div class="empty">Every task is checked off. Nice work.</div>`;
+      return;
+    }
+    let lastSection = null;
+    const parts = [];
+    for (const t of tasks) {
+      if (t.section !== lastSection) {
+        parts.push(`<li class="week" title="${esc(t.section)}">${esc(t.section || 'Unsorted')}</li>`);
+        lastSection = t.section;
+      }
+      parts.push(`<li class="task" data-id="${esc(t.id)}">
+        <button class="box" title="Mark done">${check}</button>
+        <div><div class="title">${esc(t.title)}</div>${t.notes ? `<div class="note" title="${esc(t.notes)}">${esc(t.notes)}</div>` : ''}</div>
+        ${dueChip(t.due)}
+      </li>`);
+    }
+    body.innerHTML = `<ul class="tasks">${parts.join('')}</ul>`;
+    $$('.task .box', body).forEach((b) => b.addEventListener('click', toggleTask));
+  } catch (e) {
+    if (e.status === 401 || e.status === 403) {
+      signOut();
+      return loadBlog();
+    }
+    body.innerHTML = `<div class="placeholder">Couldn't reach Blog Plan. It will retry shortly.</div>`;
+    state.last.blog = Date.now() - 7 * MIN;
+  }
+}
+
+let blogReload;
+async function toggleTask(e) {
+  const li = e.currentTarget.closest('.task');
+  const done = !li.classList.contains('done');
+  li.classList.toggle('done', done);
+  try {
+    await setTaskDone(li.dataset.id, done);
+  } catch {
+    li.classList.toggle('done', !done);
+    return;
+  }
+  clearTimeout(blogReload);
+  blogReload = setTimeout(loadBlog, 2500); // leave time to undo a mis-click
+}
+
+/* ================= recipe of the day ================= */
+
+async function loadRecipes() {
+  try {
+    const [recipes, sections, favs] = await Promise.all([fetchRecipeIndex(), fetchSections(), fetchFavorites()]);
+    state.recipes = recipes;
+    state.sections = sections;
+    state.favorites = new Set(favs);
+    state.last.recipe = Date.now();
+    renderRecipe();
+  } catch {
+    $('#recipe-body').innerHTML = `<div class="placeholder">Couldn't reach Crowder Kitchen. It will retry shortly.</div>`;
+    state.last.recipe = Date.now() - (6 * 60 - 5) * MIN;
+  }
+}
+
+function recipePool() {
+  const allow = settings.recipeSections ? new Set(settings.recipeSections) : null;
+  const pool = [];
+  for (const r of state.recipes) {
+    if (allow && !allow.has(r.section_id)) continue;
+    pool.push(r);
+    if (settings.favorFavorites && state.favorites.has(r.id)) pool.push(r, r); // 3x weight
+  }
+  return pool;
+}
+
+function pickRecipe() {
+  const pool = recipePool();
+  if (!pool.length) return null;
+  const today = localDateKey();
+  const sh = store.get('shuffle');
+  const n = sh && sh.date === today ? sh.n : 0;
+  return pool[hash(`${today}:${n}`) % pool.length];
+}
+
+function shuffleRecipe() {
+  const today = localDateKey();
+  const before = pickRecipe();
+  const sh = store.get('shuffle');
+  let n = sh && sh.date === today ? sh.n : 0;
+  for (let i = 0; i < 12; i++) {
+    n++;
+    store.set('shuffle', { date: today, n });
+    if (pickRecipe()?.id !== before?.id) break;
+  }
+  renderRecipe();
+}
+
+function renderRecipe() {
+  const body = $('#recipe-body');
+  const r = pickRecipe();
+  if (!r) {
+    body.innerHTML = `<div class="empty">No recipes match your section filter.</div>`;
+    return;
+  }
+  const section = state.sections.find((s) => s.id === r.section_id)?.name || '';
+  const meta = [r.time, r.serves ? `Serves ${r.serves}` : ''].filter(Boolean);
+  body.innerHTML = `
+    <div class="rc-section">${esc(section)}</div>
+    <div class="rc-title" id="rc-open">${esc(r.title)}</div>
+    <div class="rc-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join('')}
+      ${state.favorites.has(r.id) ? '<span class="rc-fav">★ Favorite</span>' : ''}</div>
+    ${r.description ? `<p class="rc-desc">${esc(r.description)}</p>` : ''}
+    <div class="rc-actions">
+      <button class="btn primary" id="rc-view">View recipe</button>
+      <button class="btn" data-open="kitchen">${ui.ext}Crowder Kitchen</button>
+    </div>`;
+  const open = () => openRecipe(r.id);
+  $('#rc-open').addEventListener('click', open);
+  $('#rc-view').addEventListener('click', open);
+}
+
+async function openRecipe(id) {
+  if (inTauri) {
+    try { await window.__TAURI__.core.invoke('open_recipe', { id }); return; } catch (e) { console.warn(e); }
+  }
+  window.open(`recipe.html?id=${encodeURIComponent(id)}`, 'recipe', 'width=560,height=780');
+}
+
+/* ================= news ================= */
+
+const DESKS = ['defense', 'space', 'tech'];
+
+function buildStories() {
+  const desks = state.briefing?.data?.desks || {};
+  const want = settings.newsDesk === 'all' ? DESKS : [settings.newsDesk];
+  state.stories = want.flatMap((k) => (desks[k] || []).map((s) => ({ ...s, desk: k })));
+  const saved = store.get('news');
+  const date = state.briefing?.briefing_date;
+  state.newsIdx = saved && saved.date === date && saved.desk === settings.newsDesk ? saved.idx : 0;
+  if (state.newsIdx >= state.stories.length) state.newsIdx = 0;
+}
+
+async function loadNews() {
+  try {
+    state.briefing = await fetchBriefing();
+    state.last.news = Date.now();
+    buildStories();
+    renderNews();
+  } catch {
+    $('#news-body').innerHTML = `<div class="placeholder">Couldn't reach Picket Station. It will retry shortly.</div>`;
+    state.last.news = Date.now() - 25 * MIN;
+  }
+}
+
+function stepNews(dir) {
+  const n = state.stories.length;
+  if (!n) return;
+  state.newsIdx = (state.newsIdx + dir + n) % n;
+  store.set('news', { date: state.briefing.briefing_date, desk: settings.newsDesk, idx: state.newsIdx });
+  renderNews();
+}
+
+function renderNews() {
+  const body = $('#news-body');
+  const b = state.briefing;
+  if (!b) { body.innerHTML = `<div class="empty">No briefing yet.</div>`; return; }
+  const date = parseDay(b.briefing_date);
+  const isToday = b.briefing_date === localDateKey();
+  $('#news-title').textContent = `Picket Station · ${MONTHDAY.format(date)}${isToday ? '' : ' (latest)'}`;
+  const n = state.stories.length;
+  $('#news-count').textContent = n ? `${state.newsIdx + 1}/${n}` : '';
+  if (!n) { body.innerHTML = `<div class="empty">No stories on this desk today.</div>`; return; }
+
+  const s = state.stories[state.newsIdx];
+  const img = typeof s.image === 'string' && s.image.startsWith('https://') ? s.image : '';
+  const links = (s.links || []).filter((l) => /^https?:\/\//.test(l.url));
+  body.innerHTML = `
+    <div class="nw ${img ? '' : 'noimg'}">
+      <div>
+        <span class="nw-desk ${esc(s.desk)}">${esc(s.desk)}${s.topic ? ` · ${esc(s.topic)}` : ''}</span>
+        <div class="nw-head">${esc(s.headline)}</div>
+      </div>
+      ${img ? `<img class="nw-img" alt="" referrerpolicy="no-referrer" src="${esc(img)}" />` : ''}
+    </div>
+    <p class="nw-sum">${esc(s.summary)}</p>
+    <div class="nw-links">
+      ${links.map((l, i) => `<button class="btn" data-link="${i}">${ui.ext}${esc(l.label || 'Source')}</button>`).join('')}
+      <button class="btn" data-open="picket">${ui.ext}Full briefing</button>
+    </div>`;
+  $$('[data-link]', body).forEach((btn) =>
+    btn.addEventListener('click', () => openUrl(links[+btn.dataset.link].url)));
+  const im = $('.nw-img', body);
+  if (im) im.addEventListener('error', () => { im.remove(); $('.nw', body).classList.add('noimg'); });
+}
+
+/* ================= settings ================= */
+
+function syncSegments() {
+  $$('.seg[data-setting]').forEach((seg) => {
+    const key = seg.dataset.setting;
+    $$('button', seg).forEach((b) => b.classList.toggle('on', b.dataset.value === settings[key]));
+  });
+}
+
+function renderAccount() {
+  const inn = signedIn();
+  $('#acct-in').hidden = !inn;
+  $('#acct-out').hidden = inn;
+  $('#acct-email').textContent = sessionEmail();
+  $('#signin-err').textContent = '';
+}
+
+function renderSectionChecks() {
+  const wrap = $('#set-sections');
+  if (!state.sections.length) { wrap.innerHTML = '<span class="hint">Sections load with the recipes.</span>'; return; }
+  const allow = settings.recipeSections ? new Set(settings.recipeSections) : null;
+  wrap.innerHTML = state.sections.map((s) =>
+    `<label class="check"><input type="checkbox" value="${s.id}" ${!allow || allow.has(s.id) ? 'checked' : ''}/> ${esc(s.name)}</label>`
+  ).join('');
+}
+
+async function openSettings() {
+  syncSegments();
+  renderAccount();
+  renderSectionChecks();
+  $('#set-place-current').textContent = `Current: ${settings.location.name}`;
+  $('#place-results').innerHTML = '';
+  $('#set-taskcount').value = String(settings.taskCount);
+  $('#set-favs').checked = settings.favorFavorites;
+  $('#set-opacity').value = settings.opacity;
+  $$('[data-show]').forEach((c) => { c.checked = settings.show[c.dataset.show]; });
+  $('#set-jobs-url').value = settings.jobs.url;
+  $('#set-jobs-key').value = settings.jobs.key;
+  $('#jobs-msg').textContent = '';
+  $('#set-vault').value = settings.obsidian.vault;
+  $('#set-inbox').value = settings.obsidian.inbox;
+  $('#vault-msg').textContent = '';
+  $$('#set-note-style button').forEach((b) => b.classList.toggle('on', b.dataset.value === settings.obsidian.style));
+  $('#sheet').hidden = false;
+  if (inTauri) {
+    try { $('#set-autostart').checked = await window.__TAURI__.core.invoke('plugin:autostart|is_enabled'); }
+    catch { $('#set-autostart').disabled = true; }
+  } else {
+    $('#set-autostart').disabled = true;
+  }
+}
+
+function closeSettings() { $('#sheet').hidden = true; }
+
+function persist() { saveSettings(settings); }
+
+function initSettings() {
+  $$('.seg[data-setting]').forEach((seg) => {
+    seg.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      const key = seg.dataset.setting;
+      if (settings[key] === b.dataset.value) return;
+      settings[key] = b.dataset.value;
+      persist();
+      syncSegments();
+      if (key === 'units') loadWeather();
+      if (key === 'newsDesk') { buildStories(); renderNews(); }
+      if (key === 'windowMode') applyWindowMode();
+    });
+  });
+
+  const doSearch = async () => {
+    const q = $('#set-place').value.trim();
+    const out = $('#place-results');
+    if (!q) return;
+    out.innerHTML = '<span class="hint">Searching…</span>';
+    try {
+      const res = await searchPlaces(q);
+      if (!res.length) { out.innerHTML = '<span class="hint">No matches.</span>'; return; }
+      out.innerHTML = res.map((r, i) =>
+        `<button data-i="${i}">${esc(r.name)}${r.admin1 ? `, ${esc(r.admin1)}` : ''} · ${esc(r.country_code || r.country || '')}</button>`
+      ).join('');
+      $$('button', out).forEach((b) => b.addEventListener('click', () => {
+        const r = res[+b.dataset.i];
+        settings.location = { name: `${r.name}${r.admin1 ? `, ${r.admin1}` : ''}`, lat: r.latitude, lon: r.longitude };
+        persist();
+        $('#set-place-current').textContent = `Current: ${settings.location.name}`;
+        out.innerHTML = '';
+        $('#set-place').value = '';
+        loadWeather();
+        loadLight();
+      }));
+    } catch { out.innerHTML = '<span class="err">Search failed.</span>'; }
+  };
+  $('#btn-place-search').addEventListener('click', doSearch);
+  $('#set-place').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+
+  $('#btn-signin').addEventListener('click', async () => {
+    const email = $('#set-email').value.trim();
+    const pass = $('#set-pass').value;
+    const err = $('#signin-err');
+    if (!email || !pass) { err.textContent = 'Enter your email and password.'; return; }
+    err.textContent = 'Signing in…';
+    try {
+      await signIn(email, pass);
+      $('#set-pass').value = '';
+      renderAccount();
+      loadBlog();
+      loadRecipes(); // picks up favorites
+    } catch (e) { err.textContent = e.message; }
+  });
+  $('#set-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btn-signin').click(); });
+  $('#btn-signout').addEventListener('click', () => {
+    signOut();
+    state.favorites = new Set();
+    renderAccount();
+    loadBlog();
+    renderRecipe();
+  });
+
+  $('#btn-jobs-save').addEventListener('click', async () => {
+    const msg = $('#jobs-msg');
+    settings.jobs = { url: $('#set-jobs-url').value.trim(), key: $('#set-jobs-key').value.trim() };
+    persist();
+    msg.className = 'hint';
+    msg.textContent = 'Testing…';
+    try {
+      const jobs = await fetchJobs(settings.jobs);
+      msg.className = 'hint';
+      msg.textContent = `Connected: ${jobs.length} reqs in your tracker.`;
+      state.jobs = jobs;
+      state.last.jobs = Date.now();
+      renderJobs();
+    } catch (e) {
+      msg.className = 'err';
+      msg.textContent = e.message;
+    }
+  });
+
+  const checkVault = async () => {
+    const msg = $('#vault-msg');
+    settings.obsidian.vault = $('#set-vault').value.trim();
+    persist();
+    state.vault = null;
+    try {
+      const info = await currentVault();
+      const where = `${info.daily_folder ? info.daily_folder + '/' : ''}${info.daily_format}.md`;
+      msg.className = '';
+      msg.textContent = `Vault "${info.name}" found. Daily notes go to ${where}.`;
+    } catch (e) {
+      msg.className = 'err';
+      msg.textContent = String(e?.message || e);
+    }
+  };
+  $('#btn-vault-check').addEventListener('click', checkVault);
+  $('#set-vault').addEventListener('change', checkVault);
+  $('#set-inbox').addEventListener('change', (e) => {
+    settings.obsidian.inbox = e.target.value.trim() || 'Inbox.md';
+    persist();
+  });
+  $('#set-note-style').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    settings.obsidian.style = b.dataset.value;
+    persist();
+    $$('#set-note-style button').forEach((x) => x.classList.toggle('on', x === b));
+  });
+
+  $('#set-taskcount').addEventListener('change', (e) => {
+    settings.taskCount = +e.target.value; persist(); loadBlog();
+  });
+  $('#set-sections').addEventListener('change', () => {
+    const boxes = $$('#set-sections input');
+    const ids = boxes.filter((b) => b.checked).map((b) => +b.value);
+    settings.recipeSections = ids.length === boxes.length ? null : ids;
+    persist(); renderRecipe();
+  });
+  $('#set-favs').addEventListener('change', (e) => {
+    settings.favorFavorites = e.target.checked; persist(); renderRecipe();
+  });
+  $('#set-opacity').addEventListener('input', (e) => {
+    settings.opacity = +e.target.value; persist(); applyLook();
+  });
+  $$('[data-show]').forEach((c) => c.addEventListener('change', () => {
+    settings.show[c.dataset.show] = c.checked; persist(); applyLook();
+    if (c.checked) refreshAll();
+  }));
+  $('#set-autostart').addEventListener('change', async (e) => {
+    if (!inTauri) return;
+    try {
+      await window.__TAURI__.core.invoke(e.target.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable');
+    } catch (err) {
+      console.warn(err);
+      e.target.checked = !e.target.checked;
+    }
+  });
+}
+
+/* ================= go ================= */
+
+initChrome();
+initSettings();
+initNote();
+applyLook();
+applyWindowMode();
+refreshAll();
+setInterval(tick, MIN);

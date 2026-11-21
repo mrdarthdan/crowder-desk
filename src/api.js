@@ -1,0 +1,301 @@
+// Shared data layer for Crowder Desk: settings, Supabase auth + REST, Open-Meteo.
+
+export const SUPABASE_URL = 'https://htkbjbfjipbrzidnafrs.supabase.co';
+// Publishable (public) key — safe to ship; row-level security decides what it can read.
+export const SUPABASE_KEY = 'sb_publishable_XhiTniGMnL449MnIPNAGtw_7Hvi_T9i';
+export const KITCHEN_URL = 'https://darthdan.vpages.site/crowder-kitchen/';
+export const BLOGPLAN_URL = 'https://darthdan.vpages.site/blog-plan/';
+export const PICKET_URL = 'https://darthdan.vpages.site/news-briefing/';
+
+const tauri = window.__TAURI__;
+export const inTauri = !!tauri;
+
+/* ---------------- settings ---------------- */
+
+export const DEFAULTS = {
+  location: { name: 'Mesa, Arizona', lat: 33.4152, lon: -111.8315 },
+  units: 'F',
+  windowMode: 'bottom', // bottom | normal | top
+  opacity: 0.86,
+  show: { weather: true, light: true, note: true, blog: true, jobs: true, recipe: true, news: true },
+  jobs: { url: '', key: '' },
+  obsidian: {
+    vault: 'C:\\Users\\dan\\Documents\\Obsidian\\Dan Crowder',
+    target: 'daily', // daily | inbox
+    inbox: 'Inbox.md',
+    style: 'time', // time ("- 14:05 text") | task ("- [ ] text") | plain ("- text")
+  },
+  taskCount: 5,
+  recipeSections: null, // null = all sections, else array of section ids
+  favorFavorites: true,
+  newsDesk: 'all', // all | defense | space | tech
+};
+
+export function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem('cd.settings') || '{}');
+    return {
+      ...DEFAULTS, ...s,
+      show: { ...DEFAULTS.show, ...(s.show || {}) },
+      jobs: { ...DEFAULTS.jobs, ...(s.jobs || {}) },
+      obsidian: { ...DEFAULTS.obsidian, ...(s.obsidian || {}) },
+    };
+  } catch {
+    return structuredClone(DEFAULTS);
+  }
+}
+export function saveSettings(s) {
+  localStorage.setItem('cd.settings', JSON.stringify(s));
+}
+
+export const store = {
+  get(k, d = null) {
+    try { const v = localStorage.getItem('cd.' + k); return v == null ? d : JSON.parse(v); } catch { return d; }
+  },
+  set(k, v) { localStorage.setItem('cd.' + k, JSON.stringify(v)); },
+  del(k) { localStorage.removeItem('cd.' + k); },
+};
+
+/* ---------------- desktop helpers ---------------- */
+
+export async function openUrl(url) {
+  if (!/^(https?|obsidian):\/\//i.test(url)) return;
+  if (inTauri) {
+    try { await tauri.core.invoke('plugin:opener|open_url', { url }); return; } catch (e) { console.warn(e); }
+  }
+  window.open(url, '_blank', 'noopener');
+}
+
+export function currentWindow() {
+  return inTauri ? tauri.window.getCurrentWindow() : null;
+}
+
+/* ---------------- Supabase auth ---------------- */
+
+function readSession() { return store.get('session'); }
+function writeSession(j) {
+  const s = {
+    access_token: j.access_token,
+    refresh_token: j.refresh_token,
+    expires_at: Date.now() + (j.expires_in || 3600) * 1000,
+    email: j.user?.email || readSession()?.email || '',
+    user_id: j.user?.id || readSession()?.user_id || '',
+  };
+  store.set('session', s);
+  return s;
+}
+
+export function sessionEmail() { return readSession()?.email || ''; }
+export function signedIn() { return !!readSession(); }
+export function userId() { return readSession()?.user_id || ''; }
+
+export async function signIn(email, password) {
+  const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error_description || j.msg || j.message || 'Sign-in failed');
+  return writeSession(j);
+}
+
+export function signOut() { store.del('session'); }
+
+let refreshing = null;
+async function accessToken() {
+  const s = readSession();
+  if (!s) return null;
+  if (Date.now() < s.expires_at - 60_000) return s.access_token;
+  if (!refreshing) {
+    refreshing = (async () => {
+      try {
+        const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+          method: 'POST',
+          headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: s.refresh_token }),
+        });
+        if (r.status === 400 || r.status === 401) { signOut(); return null; }
+        if (!r.ok) return null; // offline or server hiccup: keep the session, try later
+        return writeSession(await r.json()).access_token;
+      } catch { return null; } finally { refreshing = null; }
+    })();
+  }
+  return refreshing;
+}
+
+/** PostgREST call. schema 'plico' uses the profile headers. */
+export async function rest(path, { schema = 'public', method = 'GET', body, auth = true, prefer } = {}) {
+  const headers = { apikey: SUPABASE_KEY };
+  if (auth) {
+    const t = await accessToken();
+    if (t) headers.Authorization = `Bearer ${t}`;
+  }
+  if (schema !== 'public') headers[method === 'GET' ? 'Accept-Profile' : 'Content-Profile'] = schema;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (prefer) headers.Prefer = prefer;
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    const err = new Error(j.message || `Request failed (${r.status})`);
+    err.status = r.status;
+    throw err;
+  }
+  if (r.status === 204) return null;
+  const text = await r.text();
+  return text ? JSON.parse(text) : null;
+}
+
+/* ---------------- data sources ---------------- */
+
+export async function fetchWeather(loc, units) {
+  const p = new URLSearchParams({
+    latitude: loc.lat, longitude: loc.lon,
+    current: 'temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day',
+    daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset',
+    temperature_unit: units === 'C' ? 'celsius' : 'fahrenheit',
+    wind_speed_unit: units === 'C' ? 'kmh' : 'mph',
+    timezone: 'auto', forecast_days: '4',
+  });
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?${p}`);
+  if (!r.ok) throw new Error('Weather service unavailable');
+  return r.json();
+}
+
+/** Hourly cloud layers for the Light card (7 days, location's local time). */
+export async function fetchSky(loc) {
+  const p = new URLSearchParams({
+    latitude: loc.lat, longitude: loc.lon,
+    hourly: 'cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high',
+    timezone: 'auto', forecast_days: '7',
+  });
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?${p}`);
+  if (!r.ok) throw new Error('Sky forecast unavailable');
+  return r.json();
+}
+
+/* ---------------- job tracker (Google Apps Script web app) ---------------- */
+
+function jobsEndpoint(cfg, params) {
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(cfg.url || '')) {
+    throw new Error('Job Tracker web app URL isn\'t set');
+  }
+  const q = new URLSearchParams({ key: cfg.key || '', ...params });
+  return `${cfg.url}?${q}`;
+}
+
+async function jobsCall(cfg, params) {
+  const r = await fetch(jobsEndpoint(cfg, params));
+  if (!r.ok) throw new Error(`Job Tracker error (${r.status})`);
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error === 'unauthorized' ? 'Job Tracker key is wrong' : (j.error || 'Job Tracker error'));
+  return j;
+}
+
+export async function fetchJobs(cfg) {
+  return (await jobsCall(cfg, { action: 'list' })).jobs || [];
+}
+
+export function updateJob(cfg, id, patch) {
+  return jobsCall(cfg, { action: 'update', id, patch: JSON.stringify(patch) });
+}
+
+/* ---------------- Obsidian (via the Rust side) ---------------- */
+
+export function vaultInfo(vault) {
+  if (!inTauri) return Promise.reject(new Error('Only available in the desktop app'));
+  return tauri.core.invoke('vault_info', { vault });
+}
+
+export function appendNote(vault, note, text) {
+  if (!inTauri) return Promise.reject(new Error('Only available in the desktop app'));
+  return tauri.core.invoke('append_note', { vault, note, text });
+}
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/** Formats a date with the moment.js tokens Obsidian uses for daily note names. */
+export function momentFormat(fmt, d = new Date()) {
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  const map = {
+    YYYY: d.getFullYear(), YY: p(d.getFullYear() % 100),
+    MMMM: MONTHS[d.getMonth()], MMM: MONTHS[d.getMonth()].slice(0, 3), MM: p(d.getMonth() + 1), M: d.getMonth() + 1,
+    DD: p(d.getDate()), D: d.getDate(),
+    dddd: DAYS[d.getDay()], ddd: DAYS[d.getDay()].slice(0, 3), dd: DAYS[d.getDay()].slice(0, 2),
+    HH: p(d.getHours()), H: d.getHours(), mm: p(d.getMinutes()),
+  };
+  return fmt.replace(/\[([^\]]*)\]|YYYY|YY|MMMM|MMM|MM|M|DD|D|dddd|ddd|dd|HH|H|mm/g,
+    (m, lit) => (lit !== undefined ? lit : String(map[m])));
+}
+
+export async function searchPlaces(q) {
+  const p = new URLSearchParams({ name: q, count: '6', language: 'en', format: 'json' });
+  const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?${p}`);
+  if (!r.ok) throw new Error('Place search failed');
+  return (await r.json()).results || [];
+}
+
+export function fetchTasks(limit) {
+  return rest(
+    `blogplan_tasks?select=id,section,title,notes,due,done&done=is.false` +
+    `&order=due.asc.nullslast,section_order.asc,sort.asc&limit=${limit}`
+  );
+}
+
+export function setTaskDone(id, done) {
+  return rest(`blogplan_tasks?id=eq.${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    prefer: 'return=minimal',
+    body: done
+      ? { done: true, progress: 100, done_at: new Date().toISOString() }
+      : { done: false, progress: 0, done_at: null },
+  });
+}
+
+export function fetchRecipeIndex() {
+  return rest('recipes?select=id,title,section_id,time,serves,description,tags&order=title.asc', { schema: 'plico' });
+}
+export function fetchSections() {
+  return rest('sections?select=id,name&order=sort.asc', { schema: 'plico' });
+}
+export async function fetchFavorites() {
+  if (!signedIn()) return [];
+  try {
+    const rows = await rest(`favorites?select=recipe_id&user_id=eq.${encodeURIComponent(userId())}`, { schema: 'plico' });
+    return rows.map((r) => r.recipe_id);
+  } catch { return []; }
+}
+export async function fetchRecipe(id) {
+  const rows = await rest(`recipes?id=eq.${encodeURIComponent(id)}&select=*`, { schema: 'plico' });
+  return rows[0] || null;
+}
+
+export async function fetchBriefing() {
+  const rows = await rest('news_briefings?select=briefing_date,data&order=briefing_date.desc&limit=1', { auth: false });
+  return rows[0] || null;
+}
+
+/* ---------------- small utils ---------------- */
+
+export function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+export function localDateKey(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+export function parseDay(s) {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+export function hash(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}

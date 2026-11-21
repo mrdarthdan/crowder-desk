@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Crowder Desk",
+  "version": "1.1.0",
+  "identifier": "com.crowder.desk",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Crowder Desk",
+        "url": "index.html",
+        "width": 380,
+        "height": 800,
+        "minWidth": 320,
+        "minHeight": 420,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "skipTaskbar": true,
+        "resizable": true,
+        "alwaysOnBottom": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://htkbjbfjipbrzidnafrs.supabase.co https://api.open-meteo.com https://geocoding-api.open-meteo.com https://script.google.com https://script.googleusercontent.com; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "publisher": "Daniel Crowder",
+    "category": "Utility",
+    "shortDescription": "Weather, Blog Plan, recipe of the day and Picket Station on your desktop",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

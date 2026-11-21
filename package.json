@@ -1,0 +1,14 @@
+{
+  "name": "crowder-desk",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Crowder Desk: a desktop widget for weather, Blog Plan tasks, a recipe of the day and a Picket Station story.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icons": "tauri icon app-icon.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

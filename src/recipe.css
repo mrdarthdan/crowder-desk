@@ -1,0 +1,30 @@
+html, body.recipe-page { overflow: auto; background: #17151b; user-select: text; }
+.recipe-page::-webkit-scrollbar { width: 8px; }
+.recipe-page::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 4px; }
+.rp { max-width: 640px; margin: 0 auto; padding: 28px 28px 40px; }
+.rp-kicker { font: 600 10.5px/1 var(--display); letter-spacing: .18em; text-transform: uppercase; color: var(--sky); }
+.rp h1 { font: 500 30px/1.15 var(--display); margin: 8px 0 8px; color: var(--ink); }
+.rp-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--ink-3); font-size: 12.5px; }
+.rp-desc { color: var(--ink-2); font-size: 14px; line-height: 1.6; margin: 14px 0 0; }
+.rp h2 {
+  font: 600 11px/1 var(--display); letter-spacing: .18em; text-transform: uppercase; color: var(--ember);
+  margin: 28px 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.rp h3 { font: 500 13px/1.2 var(--display); color: var(--ink-2); margin: 14px 0 6px; letter-spacing: .04em; }
+.ing { list-style: none; margin: 0; padding: 0; }
+.ing li { display: grid; grid-template-columns: 92px 1fr; gap: 10px; padding: 6px 0; border-bottom: 1px dashed rgba(237, 230, 218, 0.06); font-size: 14px; }
+.ing .q { color: var(--ember); font-variant-numeric: tabular-nums; text-align: right; }
+.steps { list-style: none; margin: 0; padding: 0; counter-reset: s; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 30px 1fr; gap: 12px; padding: 10px 0; }
+.steps li::before {
+  content: counter(s); width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--ember-soft); color: var(--ember); font: 600 12px/1 var(--display);
+}
+.steps .st { font-weight: 600; color: var(--ink); font-size: 14px; }
+.steps .tx { color: var(--ink-2); font-size: 14px; line-height: 1.6; margin-top: 2px; }
+.steps .tm { display: inline-block; margin-top: 6px; font-size: 11px; color: var(--sky); background: rgba(134, 174, 191, .12); padding: 2px 8px; border-radius: 99px; }
+.notes { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: 13.5px; line-height: 1.6; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 22px; }
+.tags span { font-size: 11px; color: var(--ink-3); border: 1px solid var(--line); padding: 2px 8px; border-radius: 99px; }
+.rp-foot { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; align-items: center; color: var(--ink-3); font-size: 12px; }
+.rp-foot .grow { flex: 1; }

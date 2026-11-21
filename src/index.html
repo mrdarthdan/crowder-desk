@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crowder Desk</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div class="shell" id="shell">
+    <header class="bar" data-tauri-drag-region>
+      <div class="brand" data-tauri-drag-region>
+        <span class="mark" data-tauri-drag-region></span>
+        <span data-tauri-drag-region>Crowder Desk</span>
+      </div>
+      <div class="today" id="today" data-tauri-drag-region></div>
+      <div class="tools">
+        <button class="icon-btn" id="btn-refresh" title="Refresh"></button>
+        <button class="icon-btn" id="btn-settings" title="Settings"></button>
+        <button class="icon-btn" id="btn-hide" title="Hide to tray"></button>
+      </div>
+    </header>
+
+    <main class="scroll" id="main">
+      <section class="card weather" id="card-weather">
+        <div class="placeholder">Loading weather…</div>
+      </section>
+
+      <section class="card" id="card-light">
+        <div class="card-head">
+          <h2 id="light-title">Light</h2>
+        </div>
+        <div class="card-body" id="light-body"><div class="placeholder">Working out the light…</div></div>
+      </section>
+
+      <section class="card" id="card-note">
+        <div class="card-head">
+          <h2>Quick note</h2>
+          <div class="seg mini" id="note-target">
+            <button data-value="daily">Daily</button><button data-value="inbox">Inbox</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="note-row">
+            <textarea id="note-text" rows="1" placeholder="Jot something down… (Enter to add)"></textarea>
+            <button class="btn primary" id="note-add">Add</button>
+          </div>
+          <div class="note-status" id="note-status"></div>
+        </div>
+      </section>
+
+      <section class="card" id="card-blog">
+        <div class="card-head">
+          <h2>Blog Plan</h2>
+          <button class="link-btn" data-open="blogplan">Open</button>
+        </div>
+        <div class="card-body" id="blog-body"><div class="placeholder">Loading tasks…</div></div>
+      </section>
+
+      <section class="card" id="card-jobs">
+        <div class="card-head">
+          <h2>Job search</h2>
+          <button class="link-btn" data-open="jobtracker">Tracker</button>
+        </div>
+        <div class="card-body" id="jobs-body"><div class="placeholder">Loading your tracker…</div></div>
+      </section>
+
+      <section class="card" id="card-recipe">
+        <div class="card-head">
+          <h2>Today's recipe</h2>
+          <button class="icon-btn small" id="btn-shuffle" title="Pick another"></button>
+        </div>
+        <div class="card-body" id="recipe-body"><div class="placeholder">Picking a recipe…</div></div>
+      </section>
+
+      <section class="card" id="card-news">
+        <div class="card-head">
+          <h2 id="news-title">Picket Station</h2>
+          <div class="pager">
+            <button class="icon-btn small" id="btn-news-prev" title="Previous story"></button>
+            <span id="news-count"></span>
+            <button class="icon-btn small" id="btn-news-next" title="Next story"></button>
+          </div>
+        </div>
+        <div class="card-body" id="news-body"><div class="placeholder">Loading briefing…</div></div>
+      </section>
+
+      <footer class="foot" id="foot"></footer>
+    </main>
+
+    <!-- Settings panel -->
+    <div class="sheet" id="sheet" hidden>
+      <div class="sheet-head" data-tauri-drag-region>
+        <h2 data-tauri-drag-region>Settings</h2>
+        <button class="icon-btn" id="btn-close-settings" title="Close"></button>
+      </div>
+      <div class="sheet-body">
+        <fieldset>
+          <legend>Weather</legend>
+          <label class="field">
+            <span>Location</span>
+            <div class="row">
+              <input id="set-place" type="text" placeholder="Search a city" autocomplete="off" />
+              <button class="btn" id="btn-place-search">Find</button>
+            </div>
+            <small id="set-place-current"></small>
+            <div class="results" id="place-results"></div>
+          </label>
+          <div class="field">
+            <span>Units</span>
+            <div class="seg" data-setting="units">
+              <button data-value="F">°F</button><button data-value="C">°C</button>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Blog Plan account</legend>
+          <div id="acct-out">
+            <p class="hint">Sign in with the email and password you use for Blog Plan and Crowder Kitchen. Only a sign-in token is kept on this computer, never your password.</p>
+            <label class="field"><span>Email</span><input id="set-email" type="email" autocomplete="username" /></label>
+            <label class="field"><span>Password</span><input id="set-pass" type="password" autocomplete="current-password" /></label>
+            <button class="btn primary" id="btn-signin">Sign in</button>
+            <small class="err" id="signin-err"></small>
+          </div>
+          <div id="acct-in" hidden>
+            <p class="hint">Signed in as <strong id="acct-email"></strong></p>
+            <button class="btn" id="btn-signout">Sign out</button>
+          </div>
+          <label class="field">
+            <span>Tasks to show</span>
+            <select id="set-taskcount">
+              <option>3</option><option>4</option><option>5</option><option>6</option><option>8</option>
+            </select>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Job Tracker</legend>
+          <p class="hint">Paste the web app URL from your Job Tracker's Apps Script (Deploy → Manage deployments) and its KEY (the line near the top of Code.gs).</p>
+          <label class="field"><span>Web app URL</span><input id="set-jobs-url" type="text" placeholder="https://script.google.com/macros/s/…/exec" /></label>
+          <label class="field"><span>Key</span><input id="set-jobs-key" type="password" autocomplete="off" /></label>
+          <button class="btn" id="btn-jobs-save">Save and test</button>
+          <small class="err" id="jobs-msg"></small>
+        </fieldset>
+
+        <fieldset>
+          <legend>Obsidian quick note</legend>
+          <label class="field"><span>Vault folder</span>
+            <div class="row"><input id="set-vault" type="text" /><button class="btn" id="btn-vault-check">Check</button></div>
+            <small id="vault-msg"></small>
+          </label>
+          <label class="field"><span>Inbox note (inside the vault)</span><input id="set-inbox" type="text" placeholder="Inbox.md" /></label>
+          <div class="field">
+            <span>Add notes as</span>
+            <div class="seg" id="set-note-style">
+              <button data-value="time">- 14:05 text</button><button data-value="task">- [ ] task</button><button data-value="plain">- text</button>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Recipe of the day</legend>
+          <div class="checks" id="set-sections"></div>
+          <label class="check"><input type="checkbox" id="set-favs" /> Pick my favorites more often</label>
+        </fieldset>
+
+        <fieldset>
+          <legend>News</legend>
+          <div class="seg" data-setting="newsDesk">
+            <button data-value="all">All</button><button data-value="defense">Defense</button><button data-value="space">Space</button><button data-value="tech">Tech</button>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Widget</legend>
+          <div class="field">
+            <span>Placement</span>
+            <div class="seg" data-setting="windowMode">
+              <button data-value="bottom">On desktop</button><button data-value="normal">Normal</button><button data-value="top">Always on top</button>
+            </div>
+          </div>
+          <label class="field">
+            <span>Background opacity</span>
+            <input type="range" id="set-opacity" min="0.5" max="1" step="0.02" />
+          </label>
+          <div class="field">
+            <span>Show</span>
+            <div class="checks">
+              <label class="check"><input type="checkbox" data-show="weather" /> Weather</label>
+              <label class="check"><input type="checkbox" data-show="light" /> Light</label>
+              <label class="check"><input type="checkbox" data-show="note" /> Quick note</label>
+              <label class="check"><input type="checkbox" data-show="blog" /> Blog Plan</label>
+              <label class="check"><input type="checkbox" data-show="jobs" /> Job search</label>
+              <label class="check"><input type="checkbox" data-show="recipe" /> Recipe</label>
+              <label class="check"><input type="checkbox" data-show="news" /> News</label>
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="set-autostart" /> Start Crowder Desk when Windows starts</label>
+        </fieldset>
+        <p class="hint small">Drag the widget by its top bar. Resize from any edge. Close it and it keeps running in the system tray.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
