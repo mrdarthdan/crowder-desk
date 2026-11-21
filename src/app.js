@@ -732,7 +732,7 @@ async function openSettings() {
   $('#set-taskcount').value = String(settings.taskCount);
   $('#set-favs').checked = settings.favorFavorites;
   $('#set-opacity').value = settings.opacity;
-  $$('[data-show]').forEach((c) => { c.checked = settings.show[c.dataset.show]; });
+  renderOrderList();
   $('#set-jobs-url').value = settings.jobs.url;
   $('#set-jobs-key').value = settings.jobs.key;
   $('#jobs-msg').textContent = '';
@@ -881,10 +881,26 @@ function initSettings() {
   $('#set-opacity').addEventListener('input', (e) => {
     settings.opacity = +e.target.value; persist(); applyLook();
   });
-  $$('[data-show]').forEach((c) => c.addEventListener('change', () => {
-    settings.show[c.dataset.show] = c.checked; persist(); applyLook();
-    if (c.checked) refreshAll();
-  }));
+  $('#order-list').addEventListener('change', (e) => {
+    const li = e.target.closest('li');
+    if (!li) return;
+    settings.show[li.dataset.k] = e.target.checked;
+    persist();
+    applyLook();
+    if (e.target.checked) refreshAll();
+  });
+  $('#order-list').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-move]');
+    if (!b) return;
+    const k = b.closest('li').dataset.k;
+    const i = settings.order.indexOf(k), j = i + Number(b.dataset.move);
+    if (j < 0 || j >= settings.order.length) return;
+    [settings.order[i], settings.order[j]] = [settings.order[j], settings.order[i]];
+    persist();
+    applyOrder();
+    renderOrderList();
+    $(`#order-list li[data-k="${k}"] [data-move="${b.dataset.move}"]`)?.focus();
+  });
   $('#set-autostart').addEventListener('change', async (e) => {
     if (!inTauri) return;
     try {
@@ -896,11 +912,102 @@ function initSettings() {
   });
 }
 
+/* ================= card order ================= */
+
+const CARD_NAMES = {
+  weather: 'Weather', light: 'Light', note: 'Quick note', blog: 'Blog Plan',
+  jobs: 'Job search', recipe: "Today's recipe", news: 'Picket Station',
+};
+
+function applyOrder() {
+  const main = $('#main'), foot = $('#foot');
+  for (const k of settings.order) main.insertBefore($(`#card-${k}`), foot);
+}
+
+function renderOrderList() {
+  const n = settings.order.length;
+  $('#order-list').innerHTML = settings.order.map((k, i) => `
+    <li data-k="${k}">
+      <label class="check"><input type="checkbox" ${settings.show[k] ? 'checked' : ''} /> ${esc(CARD_NAMES[k])}</label>
+      <span class="arrows">
+        <button class="icon-btn small" data-move="-1" title="Move up" ${i === 0 ? 'disabled' : ''}>${ui.up}</button>
+        <button class="icon-btn small" data-move="1" title="Move down" ${i === n - 1 ? 'disabled' : ''}>${ui.down}</button>
+      </span>
+    </li>`).join('');
+}
+
+function saveOrderFromDom() {
+  settings.order = $$('#main > .card').map((c) => c.dataset.card);
+  persist();
+}
+
+// Pointer-based dragging (HTML5 drag-and-drop is taken over by the window's file-drop handling on Windows).
+function initDrag() {
+  for (const k of settings.order) {
+    const card = $(`#card-${k}`);
+    card.dataset.card = k;
+    const grip = document.createElement('button');
+    grip.className = 'grip';
+    grip.title = 'Drag to reorder';
+    grip.setAttribute('aria-label', `Reorder ${CARD_NAMES[k]}`);
+    grip.innerHTML = ui.grip;
+    card.prepend(grip);
+    grip.addEventListener('pointerdown', startDrag);
+  }
+}
+
+function startDrag(e) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const grip = e.currentTarget;
+  const card = grip.closest('.card');
+  const main = $('#main');
+  card.classList.add('dragging');
+  document.body.classList.add('reordering');
+  let y = e.clientY;
+
+  const placeAt = () => {
+    const others = $$('#main > .card:not([hidden])').filter((c) => c !== card);
+    const before = others.find((c) => {
+      const r = c.getBoundingClientRect();
+      return y < r.top + r.height / 2;
+    });
+    const ref = before || $('#foot');
+    if (card.nextElementSibling !== ref) main.insertBefore(card, ref);
+  };
+  const move = (ev) => { y = ev.clientY; placeAt(); };
+  // Scroll the card list when dragging near its top or bottom edge.
+  const scroller = setInterval(() => {
+    const r = main.getBoundingClientRect();
+    if (y < r.top + 36) main.scrollTop -= 14;
+    else if (y > r.bottom - 36) main.scrollTop += 14;
+    else return;
+    placeAt();
+  }, 30);
+  const end = () => {
+    clearInterval(scroller);
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', end);
+    window.removeEventListener('blur', end);
+    card.classList.remove('dragging');
+    document.body.classList.remove('reordering');
+    saveOrderFromDom();
+  };
+  // Listen on the window: moving the card in the page would drop a capture held by its handle.
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  window.addEventListener('blur', end);
+}
+
 /* ================= go ================= */
 
 initChrome();
 initSettings();
 initNote();
+initDrag();
+applyOrder();
 applyLook();
 applyWindowMode();
 refreshAll();

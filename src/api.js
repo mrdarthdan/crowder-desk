@@ -18,6 +18,7 @@ export const DEFAULTS = {
   windowMode: 'bottom', // bottom | normal | top
   opacity: 0.86,
   show: { weather: true, light: true, note: true, blog: true, jobs: true, recipe: true, news: true },
+  order: ['weather', 'light', 'note', 'blog', 'jobs', 'recipe', 'news'],
   jobs: { url: '', key: '' },
   obsidian: {
     vault: 'C:\\Users\\dan\\Documents\\Obsidian\\Dan Crowder',
@@ -34,8 +35,11 @@ export const DEFAULTS = {
 export function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem('cd.settings') || '{}');
+    // Keep the saved order, drop unknown cards, and append any cards added in newer versions.
+    const saved = Array.isArray(s.order) ? s.order.filter((k) => DEFAULTS.order.includes(k)) : [];
+    const order = [...new Set(saved), ...DEFAULTS.order.filter((k) => !saved.includes(k))];
     return {
-      ...DEFAULTS, ...s,
+      ...DEFAULTS, ...s, order,
       show: { ...DEFAULTS.show, ...(s.show || {}) },
       jobs: { ...DEFAULTS.jobs, ...(s.jobs || {}) },
       obsidian: { ...DEFAULTS.obsidian, ...(s.obsidian || {}) },

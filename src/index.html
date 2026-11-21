@@ -186,20 +186,12 @@
             <input type="range" id="set-opacity" min="0.5" max="1" step="0.02" />
           </label>
           <div class="field">
-            <span>Show</span>
-            <div class="checks">
-              <label class="check"><input type="checkbox" data-show="weather" /> Weather</label>
-              <label class="check"><input type="checkbox" data-show="light" /> Light</label>
-              <label class="check"><input type="checkbox" data-show="note" /> Quick note</label>
-              <label class="check"><input type="checkbox" data-show="blog" /> Blog Plan</label>
-              <label class="check"><input type="checkbox" data-show="jobs" /> Job search</label>
-              <label class="check"><input type="checkbox" data-show="recipe" /> Recipe</label>
-              <label class="check"><input type="checkbox" data-show="news" /> News</label>
-            </div>
+            <span>Cards: tick to show, arrows to reorder</span>
+            <ul class="order-list" id="order-list"></ul>
           </div>
           <label class="check"><input type="checkbox" id="set-autostart" /> Start Crowder Desk when Windows starts</label>
         </fieldset>
-        <p class="hint small">Drag the widget by its top bar. Resize from any edge. Close it and it keeps running in the system tray.</p>
+        <p class="hint small">Drag the widget by its top bar. Resize from any edge. Reorder cards by dragging the handle at the top of each card. Close it and it keeps running in the system tray.</p>
       </div>
     </div>
   </div>

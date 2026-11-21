@@ -14,6 +14,7 @@ It is a real Tauri app (the same stack as CrowderSphere), not a browser tab. It 
 
 ## Using it
 
+- **Reorder cards:** hover over a card and drag the dotted handle at its top edge, or use the arrows under Settings → Widget → Cards.
 - **Move:** drag the top bar. **Resize:** drag any edge. Position and size are remembered.
 - **Tray icon:** left-click shows or hides the widget. Right-click gives Refresh, Settings and Quit.
 - **The – button** (or Alt+F4) hides the widget to the tray. It keeps running.
