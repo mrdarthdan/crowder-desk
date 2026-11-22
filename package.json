@@ -1,8 +1,8 @@
 {
   "name": "crowder-desk",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
-  "description": "Crowder Desk: a desktop widget for weather, Blog Plan tasks, a recipe of the day and a Picket Station story.",
+  "description": "Crowder Desk: a desktop widget for weather, light, quick notes, Blog Plan tasks, job search, a recipe of the day and a Picket Station story.",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",

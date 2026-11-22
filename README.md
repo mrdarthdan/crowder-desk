@@ -1,13 +1,13 @@
 # Crowder Desk
 
-A small desktop widget for Windows. It shows four things at a glance:
+A small desktop widget for Windows. It shows seven cards at a glance:
 
 - **Weather:** current conditions, today's high and low, wind, humidity, sunset time, and the next three days (Open-Meteo, no API key needed).
 - **Blog Plan:** your next unchecked tasks with due dates. Tick a box and it's marked done in Blog Plan too.
-- **Today's recipe:** one recipe from Crowder Kitchen each day, with your favorites picked more often. "View recipe" opens the whole recipe in its own window. The shuffle button picks another.
+- **Today's recipe:** one recipe from Crowder Kitchen each day, with your favorites picked more often. "View recipe" opens the whole recipe in its own window. The shuffle button picks another. A recipe shown in the last 14 days isn't picked again unless nothing else fits your section filter.
 - **Light:** golden and blue hour for the next morning and evening, a color outlook for the next sunrise or sunset (from the high, mid and low cloud forecast), the moon's phase, rise and set, the next full or new moon, and the best night for stars in the coming week.
 - **Quick note:** type a line and press Enter to add it to today's Obsidian daily note (using your Daily Notes folder and date format) or to an inbox note. Notes can be added as timestamped bullets, tasks or plain bullets.
-- **Job search:** your open, starred, new and applied counts from the Job Tracker, starred reqs you haven't applied to (with a warning when the 1-month rule will drop them), and follow-ups that are due. Clicking a title opens the posting, and the **Applied** button marks it in the tracker.
+- **Job search:** your open, starred, new and applied counts from the Job Tracker, starred reqs you haven't applied to (with a warning when the 1-month rule will drop them), and follow-ups that are due. Clicking a title opens the posting, and the **Applied** button marks it in the tracker. **Followed up** hides a follow-up for 7 days; it comes back sooner if the req moves to a new stage (callback or interview).
 - **Picket Station:** one story from the latest briefing. Arrows step through the rest; buttons open the sources or the full briefing.
 
 It is a real Tauri app (the same stack as CrowderSphere), not a browser tab. It has no title bar, sits on the desktop behind your other windows, stays out of the taskbar, and lives in the system tray.

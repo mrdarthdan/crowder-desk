@@ -423,17 +423,23 @@ function renderJobs() {
     .sort((a, b) => (a.found || '').localeCompare(b.found || ''))
     .slice(0, 4);
 
+  // "Followed up" snoozes are kept on this PC: { [jobId]: { until, stage } }.
+  // A snooze only holds while the req stays in the same stage.
+  const snoozes = store.get('jobSnooze', {});
   const follow = [];
   for (const j of applied) {
+    let f = null;
     if (j.interviewed) {
       const n = dayDiff(today, j.interviewed);
-      follow.push({ j, n, note: n <= 7 ? `Interviewed ${n}d ago · send a thank-you` : `Interviewed ${n}d ago · ask about next steps` });
+      f = { j, n, stage: 'interviewed', note: n <= 7 ? `Interviewed ${n}d ago · send a thank-you` : `Interviewed ${n}d ago · ask about next steps` };
     } else if (j.callback) {
-      follow.push({ j, n: dayDiff(today, j.callback), note: 'Callback · set up the interview' });
+      f = { j, n: dayDiff(today, j.callback), stage: 'callback', note: 'Callback · set up the interview' };
     } else {
       const n = dayDiff(today, j.applied);
-      if (n >= 7) follow.push({ j, n, note: `Applied ${n}d ago · follow up` });
+      if (n >= 7) f = { j, n, stage: 'applied', note: `Applied ${n}d ago · follow up` };
     }
+    const s = f && snoozes[j.id];
+    if (f && !(s && s.stage === f.stage && today < s.until)) follow.push(f);
   }
   follow.sort((a, b) => b.n - a.n);
 
@@ -451,7 +457,9 @@ function renderJobs() {
     return item(j, `${chip}<button class="mini-btn" data-applied="${esc(j.id)}">Applied</button>`,
       [j.company, j.pay && j.pay !== 'Not listed' ? j.pay : ''].filter(Boolean).join(' · '));
   }).join('');
-  const followHtml = follow.slice(0, 3).map(({ j, note }) => item(j, '', `${j.company} · ${note}`)).join('');
+  const followHtml = follow.slice(0, 3).map(({ j, note, stage }) => item(j,
+    `<button class="mini-btn" data-followed="${esc(j.id)}" data-stage="${stage}" title="Hide for 7 days">Followed up</button>`,
+    `${j.company} · ${note}`)).join('');
 
   body.innerHTML = `
     <div class="jb-stats">
@@ -476,6 +484,18 @@ function renderJobs() {
       b.textContent = 'Retry';
       b.title = e.message;
     }
+  }));
+  $$('[data-followed]', body).forEach((b) => b.addEventListener('click', () => {
+    const snz = store.get('jobSnooze', {});
+    const t = localDateKey();
+    for (const [id, s] of Object.entries(snz)) if (s.until <= t) delete snz[id]; // drop expired
+    const d = parseDay(t);
+    snz[b.dataset.followed] = {
+      stage: b.dataset.stage,
+      until: localDateKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7)),
+    };
+    store.set('jobSnooze', snz);
+    renderJobs();
   }));
 }
 
@@ -577,10 +597,31 @@ function recipePool() {
   return pool;
 }
 
+const NO_REPEAT_DAYS = 14;
+
+/** Recipes shown on earlier days within the no-repeat window ({ 'YYYY-MM-DD': id }). */
+function recentRecipeIds(today) {
+  const hist = store.get('recipeHistory', {});
+  return new Set(Object.entries(hist)
+    .filter(([d]) => d !== today && dayDiff(today, d) <= NO_REPEAT_DAYS)
+    .map(([, id]) => id));
+}
+
+function rememberRecipe(today, id) {
+  const hist = store.get('recipeHistory', {});
+  if (hist[today] === id) return;
+  hist[today] = id;
+  for (const d of Object.keys(hist)) if (dayDiff(today, d) > NO_REPEAT_DAYS) delete hist[d];
+  store.set('recipeHistory', hist);
+}
+
 function pickRecipe() {
-  const pool = recipePool();
-  if (!pool.length) return null;
+  const all = recipePool();
+  if (!all.length) return null;
   const today = localDateKey();
+  const recent = recentRecipeIds(today);
+  const fresh = all.filter((r) => !recent.has(r.id));
+  const pool = fresh.length ? fresh : all; // small filters: allow repeats rather than nothing
   const sh = store.get('shuffle');
   const n = sh && sh.date === today ? sh.n : 0;
   return pool[hash(`${today}:${n}`) % pool.length];
@@ -606,6 +647,7 @@ function renderRecipe() {
     body.innerHTML = `<div class="empty">No recipes match your section filter.</div>`;
     return;
   }
+  rememberRecipe(localDateKey(), r.id);
   const section = state.sections.find((s) => s.id === r.section_id)?.name || '';
   const meta = [r.time, r.serves ? `Serves ${r.serves}` : ''].filter(Boolean);
   body.innerHTML = `
