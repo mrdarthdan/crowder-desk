@@ -16,6 +16,28 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
+      # Fails in seconds (instead of after the whole build) if the key secret is wrong.
+      # Prints only the length and the key's comment line, never the key.
+      - name: Check the update signing key
+        shell: bash
+        run: |
+          key="$TAURI_SIGNING_PRIVATE_KEY"
+          if [ -z "$key" ]; then
+            echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret is not set."; exit 1
+          fi
+          kind=$(printf %s "$key" | base64 -d 2>/dev/null | head -n 1 | tr -d '\r')
+          echo "Secret is ${#key} characters. Comment line: ${kind:-<not base64>}"
+          case "$kind" in
+            *"public key"*)
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY holds the PUBLIC key (crowder-desk.key.pub). Paste the contents of crowder-desk.key instead."; exit 1 ;;
+            *"secret key"*)
+              if [ "${#key}" -lt 300 ]; then
+                echo "::error::TAURI_SIGNING_PRIVATE_KEY looks cut off (${#key} characters; the full key is about 348). Paste the whole contents of crowder-desk.key."; exit 1
+              fi ;;
+            *)
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY isn't a Tauri private key. Paste the whole contents of crowder-desk.key."; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
