@@ -4,6 +4,7 @@
   "private": true,
   "description": "Crowder Desk: a desktop widget for weather, light, quick notes, Blog Plan tasks, job search, a recipe of the day and a Picket Station story.",
   "scripts": {
+    "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
     "icons": "tauri icon app-icon.png",
