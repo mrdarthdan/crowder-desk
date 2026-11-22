@@ -1,6 +1,6 @@
 import {
-  inTauri, loadSettings, saveSettings, store, openUrl, currentWindow,
-  signIn, signOut, signedIn, sessionEmail,
+  inTauri, loadSettings, saveSettings, store, cache, openUrl, currentWindow,
+  signIn, signOut, signedIn, sessionEmail, userId, initSecrets, getSecret, setSecret,
   fetchWeather, searchPlaces, fetchTasks, setTaskDone,
   fetchRecipeIndex, fetchSections, fetchFavorites, fetchBriefing,
   fetchSky, fetchJobs, updateJob, vaultInfo, appendNote, momentFormat,
@@ -65,11 +65,24 @@ function initChrome() {
     if (e.key === 'F5') { e.preventDefault(); refreshAll(true); }
   });
   window.addEventListener('focus', tick);
+  // Back online (e.g. after sleep or a Wi-Fi drop): refresh whatever is showing saved data.
+  window.addEventListener('online', () => {
+    for (const k of Object.keys(EVERY)) if ($(`#card-${k}`).classList.contains('stale')) state.last[k] = 0;
+    tick();
+  });
 
   if (inTauri) {
     window.__TAURI__.event.listen('tray-action', (e) => {
       if (e.payload === 'refresh') refreshAll(true);
       if (e.payload === 'settings') openSettings();
+      if (e.payload === 'raise') raiseWindow();
+      if (e.payload === 'note') focusNote();
+    });
+    // A widget lifted above other windows goes back to its placement once it loses focus.
+    window.addEventListener('blur', () => {
+      if (!raised) return;
+      raised = false;
+      applyWindowMode();
     });
   }
 }
@@ -103,6 +116,28 @@ async function applyWindowMode() {
   } catch (e) { console.warn('window mode', e); }
 }
 
+// "On desktop" keeps the widget under every window, so showing it from the tray or
+// Ctrl+Alt+Space lifts it to the top until you click away.
+let raised = false;
+async function raiseWindow() {
+  const w = currentWindow();
+  if (!w || settings.windowMode !== 'bottom') return;
+  raised = true;
+  try {
+    await w.setAlwaysOnBottom(false);
+    await w.setAlwaysOnTop(true);
+    await w.setFocus();
+  } catch (e) { console.warn('raise', e); }
+}
+
+function focusNote() {
+  if (!$('#sheet').hidden) closeSettings();
+  const card = $('#card-note');
+  if (card.hidden) return;
+  card.scrollIntoView({ block: 'nearest' });
+  $('#note-text').focus();
+}
+
 /* ================= refresh loop ================= */
 
 async function refreshAll(manual = false) {
@@ -122,6 +157,9 @@ async function refreshAll(manual = false) {
 }
 
 const MIN = 60_000;
+const EVERY = { weather: 15, light: 30, jobs: 15, blog: 10, news: 30, recipe: 360 }; // refresh, minutes
+const RETRY = 3; // minutes to wait after a failed refresh
+
 function tick() {
   const now = Date.now();
   const today = localDateKey();
@@ -131,14 +169,63 @@ function tick() {
     refreshAll();
     return;
   }
-  if (settings.show.weather && now - state.last.weather > 15 * MIN) loadWeather();
-  if (settings.show.light && now - state.last.light > 30 * MIN) loadLight();
+  const due = (k) => settings.show[k] && now - state.last[k] > EVERY[k] * MIN;
+  if (due('weather')) loadWeather();
+  if (due('light')) loadLight();
   else if (settings.show.light) renderLight(); // keep "this evening / tomorrow" current
-  if (settings.show.jobs && now - state.last.jobs > 15 * MIN) loadJobs();
-  if (settings.show.blog && now - state.last.blog > 10 * MIN) loadBlog();
-  if (settings.show.news && now - state.last.news > 30 * MIN) loadNews();
-  if (settings.show.recipe && now - state.last.recipe > 6 * 60 * MIN) loadRecipes();
+  if (due('jobs')) loadJobs();
+  if (due('blog')) loadBlog();
+  if (due('news')) loadNews();
+  if (due('recipe')) loadRecipes();
   $('#foot').textContent = `Updated ${TIME_FMT.format(new Date())}`;
+}
+
+/* ================= last-good data ================= */
+
+function setStale(card, at) {
+  const el = $(`#card-${card}`);
+  let note = $('.stale-note', el);
+  if (!at) {
+    el.classList.remove('stale');
+    note?.remove();
+    return;
+  }
+  if (!note) {
+    note = document.createElement('div');
+    note.className = 'stale-note';
+    el.append(note);
+  }
+  const d = new Date(at);
+  const when = localDateKey(d) === localDateKey() ? TIME_FMT.format(d) : `${MONTHDAY.format(d)}, ${TIME_FMT.format(d)}`;
+  el.classList.add('stale');
+  note.textContent = `Couldn't refresh · showing data from ${when}`;
+}
+
+/**
+ * Fetches a card's data, saves it as the card's last good copy, and renders it.
+ * On failure it renders the saved copy (if it was saved for the same settings, `key`)
+ * with a "showing data from …" note, and retries in a few minutes.
+ * `onError` can claim an error (return true) to skip all of that.
+ */
+async function loadCard(card, { key = '', get, render, failMsg, onError }) {
+  try {
+    const data = await get();
+    state.last[card] = Date.now();
+    cache.set(card, key, data);
+    setStale(card, 0);
+    render(data);
+  } catch (e) {
+    if (onError?.(e)) return;
+    state.last[card] = Date.now() - (EVERY[card] - RETRY) * MIN;
+    const saved = cache.get(card);
+    if (saved && saved.key === key) {
+      render(saved.data);
+      setStale(card, saved.at);
+    } else {
+      setStale(card, 0);
+      $(`#${card}-body`).innerHTML = `<div class="placeholder">${esc(failMsg(e))} It will retry shortly.</div>`;
+    }
+  }
 }
 
 /* ================= weather ================= */
@@ -150,62 +237,64 @@ function clock(isoLocal) {
   return TIME_FMT.format(d);
 }
 
-async function loadWeather() {
-  const el = $('#card-weather');
-  try {
-    const w = await fetchWeather(settings.location, settings.units);
-    state.last.weather = Date.now();
-    const c = w.current, d = w.daily;
-    const now = weatherInfo(c.weather_code, c.is_day);
-    const afterSunset = c.time > d.sunset[0];
-    const sunLine = afterSunset && d.sunrise[1]
-      ? `<span>${ui.sunset}Sunrise ${clock(d.sunrise[1])}</span>`
-      : `<span class="golden">${ui.sunset}Sunset ${clock(d.sunset[0])}</span>`;
-    const windUnit = settings.units === 'C' ? 'km/h' : 'mph';
+function loadWeather() {
+  const { lat, lon } = settings.location;
+  return loadCard('weather', {
+    key: `${lat},${lon},${settings.units}`,
+    get: () => fetchWeather(settings.location, settings.units),
+    render: renderWeather,
+    failMsg: () => 'Weather unavailable right now.',
+  });
+}
 
-    const days = [1, 2, 3].map((i) => {
-      const info = weatherInfo(d.weather_code[i], 1);
-      const p = d.precipitation_probability_max?.[i];
-      return `<div class="wx-day" title="${esc(info.label)}">
-        <div class="d">${esc(WEEKDAY.format(parseDay(d.time[i])))}</div>
-        ${info.icon}
-        <div class="t"><b>${Math.round(d.temperature_2m_max[i])}°</b><i>${Math.round(d.temperature_2m_min[i])}°</i></div>
-        <div class="p">${p >= 20 ? `${p}% rain` : ''}</div>
-      </div>`;
-    }).join('');
+function renderWeather(w) {
+  const el = $('#weather-body');
+  const c = w.current, d = w.daily;
+  const now = weatherInfo(c.weather_code, c.is_day);
+  const afterSunset = c.time > d.sunset[0];
+  const sunLine = afterSunset && d.sunrise[1]
+    ? `<span>${ui.sunset}Sunrise ${clock(d.sunrise[1])}</span>`
+    : `<span class="golden">${ui.sunset}Sunset ${clock(d.sunset[0])}</span>`;
+  const windUnit = settings.units === 'C' ? 'km/h' : 'mph';
 
-    el.innerHTML = `
-      <div class="wx-now">
-        <div class="wx-temp">${Math.round(c.temperature_2m)}<sup>°${settings.units}</sup></div>
-        <div class="wx-big">${now.icon}</div>
-        <div class="wx-cond">${esc(now.label)} · H ${Math.round(d.temperature_2m_max[0])}° L ${Math.round(d.temperature_2m_min[0])}°</div>
-        <div class="wx-place">${esc(settings.location.name)}</div>
-      </div>
-      <div class="wx-meta">
-        <span>Feels ${Math.round(c.apparent_temperature)}°</span>
-        <span>${ui.wind}${Math.round(c.wind_speed_10m)} ${windUnit}</span>
-        <span>${ui.drop}${Math.round(c.relative_humidity_2m)}%</span>
-        ${sunLine}
-      </div>
-      <div class="wx-days">${days}</div>`;
-    $('.wx-big svg', el)?.setAttribute('style', 'width:64px;height:64px');
-  } catch (e) {
-    el.innerHTML = `<div class="placeholder">Weather unavailable right now. It will retry shortly.</div>`;
-    state.last.weather = Date.now() - 12 * MIN; // retry in ~3 minutes
-  }
+  const days = [1, 2, 3].map((i) => {
+    const info = weatherInfo(d.weather_code[i], 1);
+    const p = d.precipitation_probability_max?.[i];
+    return `<div class="wx-day" title="${esc(info.label)}">
+      <div class="d">${esc(WEEKDAY.format(parseDay(d.time[i])))}</div>
+      ${info.icon}
+      <div class="t"><b>${Math.round(d.temperature_2m_max[i])}°</b><i>${Math.round(d.temperature_2m_min[i])}°</i></div>
+      <div class="p">${p >= 20 ? `${p}% rain` : ''}</div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="wx-now">
+      <div class="wx-temp">${Math.round(c.temperature_2m)}<sup>°${settings.units}</sup></div>
+      <div class="wx-big">${now.icon}</div>
+      <div class="wx-cond">${esc(now.label)} · H ${Math.round(d.temperature_2m_max[0])}° L ${Math.round(d.temperature_2m_min[0])}°</div>
+      <div class="wx-place">${esc(settings.location.name)}</div>
+    </div>
+    <div class="wx-meta">
+      <span>Feels ${Math.round(c.apparent_temperature)}°</span>
+      <span>${ui.wind}${Math.round(c.wind_speed_10m)} ${windUnit}</span>
+      <span>${ui.drop}${Math.round(c.relative_humidity_2m)}%</span>
+      ${sunLine}
+    </div>
+    <div class="wx-days">${days}</div>`;
+  $('.wx-big svg', el)?.setAttribute('style', 'width:64px;height:64px');
 }
 
 /* ================= light ================= */
 
-async function loadLight() {
-  try {
-    state.sky = await fetchSky(settings.location);
-    state.last.light = Date.now();
-    renderLight();
-  } catch {
-    if (!state.sky) $('#light-body').innerHTML = `<div class="placeholder">Sky forecast unavailable. It will retry shortly.</div>`;
-    state.last.light = Date.now() - 25 * MIN;
-  }
+function loadLight() {
+  const { lat, lon } = settings.location;
+  return loadCard('light', {
+    key: `${lat},${lon}`,
+    get: () => fetchSky(settings.location),
+    render: (sky) => { state.sky = sky; renderLight(); },
+    failMsg: () => 'Sky forecast unavailable.',
+  });
 }
 
 function renderLight() {
@@ -399,16 +488,15 @@ async function loadJobs() {
     body.innerHTML = `<div class="signin-cta"><span>Connect your Job Tracker to see what needs you today.</span>
       <button class="btn primary" id="jobs-connect">Connect</button></div>`;
     $('#jobs-connect').addEventListener('click', openSettings);
+    setStale('jobs', 0);
     return;
   }
-  try {
-    state.jobs = await fetchJobs(cfg);
-    state.last.jobs = Date.now();
-    renderJobs();
-  } catch (e) {
-    body.innerHTML = `<div class="placeholder">${esc(e.message || 'Couldn\'t reach the Job Tracker')}. It will retry shortly.</div>`;
-    state.last.jobs = Date.now() - 12 * MIN;
-  }
+  return loadCard('jobs', {
+    key: cfg.url,
+    get: () => fetchJobs(cfg),
+    render: (jobs) => { state.jobs = jobs; renderJobs(); },
+    failMsg: (e) => `${e.message || 'Couldn\'t reach the Job Tracker'}.`,
+  });
 }
 
 function renderJobs() {
@@ -521,38 +609,44 @@ async function loadBlog() {
     body.innerHTML = `<div class="signin-cta"><span>Sign in to see your next posting tasks.</span>
       <button class="btn primary" id="blog-signin">Sign in</button></div>`;
     $('#blog-signin').addEventListener('click', openSettings);
+    setStale('blog', 0);
     return;
   }
-  try {
-    const tasks = await fetchTasks(settings.taskCount);
-    state.last.blog = Date.now();
-    if (!tasks.length) {
-      body.innerHTML = `<div class="empty">Every task is checked off. Nice work.</div>`;
-      return;
-    }
-    let lastSection = null;
-    const parts = [];
-    for (const t of tasks) {
-      if (t.section !== lastSection) {
-        parts.push(`<li class="week" title="${esc(t.section)}">${esc(t.section || 'Unsorted')}</li>`);
-        lastSection = t.section;
-      }
-      parts.push(`<li class="task" data-id="${esc(t.id)}">
-        <button class="box" title="Mark done">${check}</button>
-        <div><div class="title">${esc(t.title)}</div>${t.notes ? `<div class="note" title="${esc(t.notes)}">${esc(t.notes)}</div>` : ''}</div>
-        ${dueChip(t.due)}
-      </li>`);
-    }
-    body.innerHTML = `<ul class="tasks">${parts.join('')}</ul>`;
-    $$('.task .box', body).forEach((b) => b.addEventListener('click', toggleTask));
-  } catch (e) {
-    if (e.status === 401 || e.status === 403) {
+  return loadCard('blog', {
+    key: `${userId()}:${settings.taskCount}`,
+    get: () => fetchTasks(settings.taskCount),
+    render: renderTasks,
+    failMsg: () => 'Couldn\'t reach Blog Plan.',
+    onError: (e) => {
+      if (e.status !== 401 && e.status !== 403) return false;
       signOut();
-      return loadBlog();
-    }
-    body.innerHTML = `<div class="placeholder">Couldn't reach Blog Plan. It will retry shortly.</div>`;
-    state.last.blog = Date.now() - 7 * MIN;
+      loadBlog();
+      return true;
+    },
+  });
+}
+
+function renderTasks(tasks) {
+  const body = $('#blog-body');
+  if (!tasks.length) {
+    body.innerHTML = `<div class="empty">Every task is checked off. Nice work.</div>`;
+    return;
   }
+  let lastSection = null;
+  const parts = [];
+  for (const t of tasks) {
+    if (t.section !== lastSection) {
+      parts.push(`<li class="week" title="${esc(t.section)}">${esc(t.section || 'Unsorted')}</li>`);
+      lastSection = t.section;
+    }
+    parts.push(`<li class="task" data-id="${esc(t.id)}">
+      <button class="box" title="Mark done">${check}</button>
+      <div><div class="title">${esc(t.title)}</div>${t.notes ? `<div class="note" title="${esc(t.notes)}">${esc(t.notes)}</div>` : ''}</div>
+      ${dueChip(t.due)}
+    </li>`);
+  }
+  body.innerHTML = `<ul class="tasks">${parts.join('')}</ul>`;
+  $$('.task .box', body).forEach((b) => b.addEventListener('click', toggleTask));
 }
 
 let blogReload;
@@ -572,18 +666,21 @@ async function toggleTask(e) {
 
 /* ================= recipe of the day ================= */
 
-async function loadRecipes() {
-  try {
-    const [recipes, sections, favs] = await Promise.all([fetchRecipeIndex(), fetchSections(), fetchFavorites()]);
-    state.recipes = recipes;
-    state.sections = sections;
-    state.favorites = new Set(favs);
-    state.last.recipe = Date.now();
-    renderRecipe();
-  } catch {
-    $('#recipe-body').innerHTML = `<div class="placeholder">Couldn't reach Crowder Kitchen. It will retry shortly.</div>`;
-    state.last.recipe = Date.now() - (6 * 60 - 5) * MIN;
-  }
+function loadRecipes() {
+  return loadCard('recipe', {
+    key: userId(), // favorites depend on who is signed in
+    get: async () => {
+      const [recipes, sections, favs] = await Promise.all([fetchRecipeIndex(), fetchSections(), fetchFavorites()]);
+      return { recipes, sections, favs };
+    },
+    render: ({ recipes, sections, favs }) => {
+      state.recipes = recipes;
+      state.sections = sections;
+      state.favorites = new Set(favs);
+      renderRecipe();
+    },
+    failMsg: () => 'Couldn\'t reach Crowder Kitchen.',
+  });
 }
 
 function recipePool() {
@@ -686,16 +783,12 @@ function buildStories() {
   if (state.newsIdx >= state.stories.length) state.newsIdx = 0;
 }
 
-async function loadNews() {
-  try {
-    state.briefing = await fetchBriefing();
-    state.last.news = Date.now();
-    buildStories();
-    renderNews();
-  } catch {
-    $('#news-body').innerHTML = `<div class="placeholder">Couldn't reach Picket Station. It will retry shortly.</div>`;
-    state.last.news = Date.now() - 25 * MIN;
-  }
+function loadNews() {
+  return loadCard('news', {
+    get: fetchBriefing,
+    render: (b) => { state.briefing = b; buildStories(); renderNews(); },
+    failMsg: () => 'Couldn\'t reach Picket Station.',
+  });
 }
 
 function stepNews(dir) {
@@ -867,11 +960,14 @@ function initSettings() {
     msg.className = 'hint';
     msg.textContent = 'Testing…';
     try {
+      await setSecret('jobs-key', settings.jobs.key || null);
       const jobs = await fetchJobs(settings.jobs);
       msg.className = 'hint';
       msg.textContent = `Connected: ${jobs.length} reqs in your tracker.`;
       state.jobs = jobs;
       state.last.jobs = Date.now();
+      cache.set('jobs', settings.jobs.url, jobs);
+      setStale('jobs', 0);
       renderJobs();
     } catch (e) {
       msg.className = 'err';
@@ -1043,12 +1139,62 @@ function startDrag(e) {
   window.addEventListener('blur', end);
 }
 
+/* ================= updates ================= */
+
+async function checkUpdate(manual = false) {
+  if (!inTauri) return;
+  const msg = $('#update-msg');
+  if (manual) msg.textContent = 'Checking…';
+  try {
+    const v = await window.__TAURI__.core.invoke('check_update');
+    if (v) showUpdate(v);
+    if (manual) msg.textContent = v ? `Version ${v} is available.` : 'You have the latest version.';
+  } catch (e) {
+    if (manual) msg.textContent = `Couldn't check for updates: ${e?.message || e}`;
+    else console.warn('update check', e);
+  }
+}
+
+function showUpdate(version) {
+  const bar = $('#update');
+  bar.innerHTML = `<span>Crowder Desk ${esc(version)} is ready</span>
+    <button class="btn primary" id="btn-update">Install and restart</button>`;
+  bar.hidden = false;
+  const btn = $('#btn-update');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Installing…';
+    try {
+      await window.__TAURI__.core.invoke('install_update'); // restarts the app when done
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Retry';
+      btn.title = String(e?.message || e);
+    }
+  });
+}
+
+function initUpdates() {
+  $('#btn-update-check').addEventListener('click', () => checkUpdate(true));
+  if (!inTauri) { $('#btn-update-check').disabled = true; return; }
+  window.__TAURI__.app.getVersion().then((v) => { $('#app-version').textContent = `Crowder Desk ${v}`; }).catch(() => {});
+  setTimeout(checkUpdate, 30_000); // give the network a moment after Windows starts
+  setInterval(checkUpdate, 6 * 60 * MIN);
+}
+
 /* ================= go ================= */
 
+// Secrets first: the Blog Plan session and Job Tracker key come from Credential Manager.
+{
+  const { jobsKey } = await initSecrets(settings.jobs.key);
+  settings.jobs.key = jobsKey;
+  if (getSecret('jobs-key')) persist(); // the key is stored safely; drop any old copy in settings
+}
 initChrome();
 initSettings();
 initNote();
 initDrag();
+initUpdates();
 applyOrder();
 applyLook();
 applyWindowMode();

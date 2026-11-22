@@ -6,7 +6,64 @@ use tauri::{
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_window_state::StateFlags;
+
+/* ---------------- secrets (Windows Credential Manager) ---------------- */
+
+const SECRET_SERVICE: &str = "com.crowder.desk";
+
+fn secret_entry(name: &str) -> Result<keyring::Entry, String> {
+    // Only the names the widget uses; nothing else can be read or written.
+    if !matches!(name, "session" | "jobs-key") {
+        return Err("unknown secret".into());
+    }
+    keyring::Entry::new(SECRET_SERVICE, name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn secret_get(name: String) -> Result<Option<String>, String> {
+    match secret_entry(&name)?.get_password() {
+        Ok(v) => Ok(Some(v)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn secret_set(name: String, value: String) -> Result<(), String> {
+    secret_entry(&name)?.set_password(&value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn secret_delete(name: String) -> Result<(), String> {
+    match secret_entry(&name)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/* ---------------- updates ---------------- */
+
+/// Returns the newer version on offer, if any.
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<Option<String>, String> {
+    let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
+    Ok(update.map(|u| u.version))
+}
+
+/// Downloads and runs the signed installer, then restarts into the new version.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
+    let Some(update) = update else { return Err("Already up to date.".into()) };
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart();
+}
 
 #[derive(serde::Serialize)]
 struct VaultInfo {
@@ -97,7 +154,14 @@ fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        // Lets the page lift an "on desktop" widget above other windows until it loses focus.
+        let _ = app.emit_to("main", "tray-action", "raise");
     }
+}
+
+/// Ctrl+Alt+Space: bring the widget up (even after Win+D) with the cursor in Quick note.
+fn summon_shortcut() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space)
 }
 
 fn toggle_main(app: &AppHandle) {
@@ -150,6 +214,17 @@ pub fn run() {
             show_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == ShortcutState::Pressed && shortcut == &summon_shortcut() {
+                        show_main(app);
+                        let _ = app.emit_to("main", "tray-action", "note");
+                    }
+                })
+                .build(),
+        )
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
@@ -160,8 +235,16 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
-        .invoke_handler(tauri::generate_handler![open_recipe, vault_info, append_note])
+        .invoke_handler(tauri::generate_handler![
+            open_recipe, vault_info, append_note,
+            secret_get, secret_set, secret_delete,
+            check_update, install_update
+        ])
         .setup(|app| {
+            // Another program may already own the shortcut; the widget still works without it.
+            if let Err(e) = app.global_shortcut().register(summon_shortcut()) {
+                eprintln!("Couldn't register Ctrl+Alt+Space: {e}");
+            }
             let toggle = MenuItem::with_id(app, "toggle", "Show / hide widget", true, None::<&str>)?;
             let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;

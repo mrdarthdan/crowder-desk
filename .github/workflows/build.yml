@@ -10,6 +10,11 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      # Signs the update files the app checks for. Add both as repository secrets
+      # (Settings → Secrets and variables → Actions). The password secret may be empty.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +31,28 @@ jobs:
       - name: Install JS dependencies
         run: npm install
 
+      - name: Check the version matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: node scripts/set-version.mjs --check "${GITHUB_REF_NAME#v}"
+
+      # Tag builds: build, create the GitHub release, and attach the installers,
+      # their signatures and latest.json (what the in-app updater reads).
+      - name: Build and publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Crowder Desk ${{ github.ref_name }}
+          releaseBody: See the commits since the last release.
+          releaseDraft: false
+          includeUpdaterJson: true
+
+      # Manual runs: just build the installers.
       - name: Build installer
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: npm run build
 
       - name: Upload installers
@@ -34,13 +60,5 @@ jobs:
         with:
           name: crowder-desk-windows
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
-
-      - name: Attach to release (tag builds)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi

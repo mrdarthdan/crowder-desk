@@ -16,18 +16,23 @@ It is a real Tauri app (the same stack as CrowderSphere), not a browser tab. It 
 
 - **Reorder cards:** hover over a card and drag the dotted handle at its top edge, or use the arrows under Settings → Widget → Cards.
 - **Move:** drag the top bar. **Resize:** drag any edge. Position and size are remembered.
+- **Ctrl+Alt+Space** (anywhere) brings the widget up, even after Win+D, with the cursor in Quick note. In "On desktop" placement it sits on top until you click away, then goes back behind your windows.
+- **Offline:** each card keeps its last good data. If a refresh fails (no network at startup, a service down), the card shows that data dimmed with "Couldn't refresh · showing data from …", and refreshes as soon as the network is back.
+- **Updates:** Crowder Desk checks GitHub for a new version shortly after it starts and every 6 hours. When there is one, a banner offers **Install and restart**. Settings → About has **Check for updates**.
 - **Tray icon:** left-click shows or hides the widget. Right-click gives Refresh, Settings and Quit.
 - **The – button** (or Alt+F4) hides the widget to the tray. It keeps running.
 - **Settings** (gear icon):
   - Location search and °F/°C
-  - Blog Plan sign-in. It uses the same email and password as Blog Plan and Crowder Kitchen. Only a sign-in token is stored, never the password.
+  - Blog Plan sign-in. It uses the same email and password as Blog Plan and Crowder Kitchen. Only a sign-in token is stored (in Windows Credential Manager), never the password.
   - Which recipe sections to pick from, and whether to favor favorites
   - News desk: All, Defense, Space or Tech
   - Placement: On desktop (behind windows), Normal, or Always on top
   - Background opacity, which cards to show, and whether to start with Windows
 - **Refresh:** automatic. Weather every 15 minutes, tasks every 10, news every 30, and everything at midnight. F5 or the refresh button forces it.
 
-Note: Win+D ("show desktop") hides any window, including this widget. Click the tray icon to bring it back.
+Note: Win+D ("show desktop") hides any window, including this widget. Press Ctrl+Alt+Space or click the tray icon to bring it back.
+
+**Secrets:** the Blog Plan sign-in token and the Job Tracker key are kept in Windows Credential Manager (as `com.crowder.desk` entries), not in the widget's settings. Versions before 1.3 kept them in the widget's local storage; 1.3 moves them on first start.
 
 ## Building
 
@@ -43,7 +48,30 @@ The installers are written to `src-tauri\target\release\bundle\nsis\` (a setup `
 
 ### Or let GitHub build it
 
-Push this folder to a GitHub repo. Then, under **Actions → Build Windows installer → Run workflow**, start a build and download the installer from the run's artifacts. Pushing a tag like `v1.0.0` also attaches the installers to a GitHub release.
+Under **Actions → Build Windows installer → Run workflow**, start a build and download the installer from the run's artifacts.
+
+### Releasing a version
+
+The in-app updater reads `latest.json` from the newest GitHub release, so the repo must be public and releases must be signed.
+
+One-time setup: in the repo's **Settings → Secrets and variables → Actions**, add
+- `TAURI_SIGNING_PRIVATE_KEY`: the contents of `%USERPROFILE%.tauricrowder-desk.key`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: leave empty (the key has no password)
+
+Keep that key file safe. Without it, installed copies can't verify any future update. Its public half is in `tauri.conf.json` under `plugins.updater`.
+
+Each release:
+
+```powershell
+npm run set-version 1.3.0   # updates package.json, tauri.conf.json, Cargo.toml, Cargo.lock
+git commit -am "Crowder Desk 1.3.0"
+git tag v1.3.0
+git push origin main v1.3.0
+```
+
+The tag build checks that the version matches the tag, then publishes the release with the installers, their signatures and `latest.json`.
+
+To build signed update files locally, set `$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw $env:USERPROFILE.tauricrowder-desk.key` before `npm run build`.
 
 ## Where the data comes from
 
@@ -67,6 +95,8 @@ src/                 widget front end (plain HTML/CSS/JS, no bundler)
   recipe.html/js/css the recipe window
   api.js             settings, Supabase auth + REST, Open-Meteo
   icons.js           weather and UI icons
-src-tauri/           Rust shell: window, tray, autostart, window-state, single-instance
+src-tauri/           Rust shell: window, tray, autostart, window-state, single-instance,
+                     Ctrl+Alt+Space, Credential Manager secrets, updater
+scripts/set-version.mjs  sets (or checks) the version in all four files
 app-icon.png         1024px source icon (regenerate all sizes with `npm run icons`)
 ```

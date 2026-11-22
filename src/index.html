@@ -22,9 +22,11 @@
       </div>
     </header>
 
+    <div class="update" id="update" hidden></div>
+
     <main class="scroll" id="main">
       <section class="card weather" id="card-weather">
-        <div class="placeholder">Loading weather…</div>
+        <div id="weather-body"><div class="placeholder">Loading weather…</div></div>
       </section>
 
       <section class="card" id="card-light">
@@ -191,7 +193,16 @@
           </div>
           <label class="check"><input type="checkbox" id="set-autostart" /> Start Crowder Desk when Windows starts</label>
         </fieldset>
-        <p class="hint small">Drag the widget by its top bar. Resize from any edge. Reorder cards by dragging the handle at the top of each card. Close it and it keeps running in the system tray.</p>
+
+        <fieldset>
+          <legend>About</legend>
+          <div class="row about-row">
+            <span id="app-version">Crowder Desk</span>
+            <button class="btn" id="btn-update-check">Check for updates</button>
+          </div>
+          <small class="hint" id="update-msg"></small>
+        </fieldset>
+        <p class="hint small">Drag the widget by its top bar. Resize from any edge. Reorder cards by dragging the handle at the top of each card. Close it and it keeps running in the system tray. Press Ctrl+Alt+Space anywhere to bring it up with the cursor in Quick note.</p>
       </div>
     </div>
   </div>

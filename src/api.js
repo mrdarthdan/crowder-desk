@@ -49,15 +49,24 @@ export function loadSettings() {
   }
 }
 export function saveSettings(s) {
-  localStorage.setItem('cd.settings', JSON.stringify(s));
+  // The Job Tracker key lives in Windows Credential Manager, never in settings.
+  localStorage.setItem('cd.settings', JSON.stringify({ ...s, jobs: { ...s.jobs, key: '' } }));
 }
 
 export const store = {
   get(k, d = null) {
     try { const v = localStorage.getItem('cd.' + k); return v == null ? d : JSON.parse(v); } catch { return d; }
   },
-  set(k, v) { localStorage.setItem('cd.' + k, JSON.stringify(v)); },
+  set(k, v) {
+    try { localStorage.setItem('cd.' + k, JSON.stringify(v)); } catch (e) { console.warn('store', k, e); }
+  },
   del(k) { localStorage.removeItem('cd.' + k); },
+};
+
+/** Last good data per card, so a failed refresh (or an offline start) still shows something. */
+export const cache = {
+  get(card) { return store.get('cache.' + card); },
+  set(card, key, data) { store.set('cache.' + card, { at: Date.now(), key, data }); },
 };
 
 /* ---------------- desktop helpers ---------------- */
@@ -74,19 +83,75 @@ export function currentWindow() {
   return inTauri ? tauri.window.getCurrentWindow() : null;
 }
 
+/* ---------------- secrets ---------------- */
+// In the desktop app these live in Windows Credential Manager (via the Rust side).
+// In a plain browser (development only) they fall back to localStorage.
+
+const secrets = {};
+
+async function readSecret(name) {
+  const raw = inTauri
+    ? await tauri.core.invoke('secret_get', { name })
+    : localStorage.getItem('cd.secret.' + name);
+  return raw ? JSON.parse(raw) : null;
+}
+
+export function getSecret(name) { return secrets[name] ?? null; }
+
+export async function setSecret(name, value) {
+  secrets[name] = value ?? null;
+  if (value == null) {
+    if (inTauri) await tauri.core.invoke('secret_delete', { name });
+    else localStorage.removeItem('cd.secret.' + name);
+  } else {
+    const raw = JSON.stringify(value);
+    if (inTauri) await tauri.core.invoke('secret_set', { name, value: raw });
+    else localStorage.setItem('cd.secret.' + name, raw);
+  }
+}
+
+/**
+ * Loads secrets into memory. Call once before anything signs in or calls the Job Tracker.
+ * Also moves secrets that older versions kept in localStorage, deleting the old copy
+ * only once the new one is saved. `legacyJobsKey` is the key from saved settings.
+ */
+export async function initSecrets(legacyJobsKey = '') {
+  for (const name of ['session', 'jobs-key']) {
+    try { secrets[name] = await readSecret(name); } catch (e) { console.warn('secret', name, e); secrets[name] = null; }
+  }
+  const old = store.get('session');
+  if (old?.refresh_token) {
+    try {
+      if (!secrets.session) await setSecret('session', { refresh_token: old.refresh_token, email: old.email, user_id: old.user_id });
+      store.del('session');
+    } catch (e) { console.warn('moving session', e); }
+  }
+  if (legacyJobsKey && !secrets['jobs-key']) {
+    try { await setSecret('jobs-key', legacyJobsKey); } catch (e) { console.warn('moving jobs key', e); }
+  }
+  // Until the session is restored above, fall back to the old copy so nothing signs out.
+  const saved = secrets.session || (old?.refresh_token ? old : null);
+  session = saved ? { ...saved, access_token: '', expires_at: 0 } : null;
+  return { jobsKey: secrets['jobs-key'] || legacyJobsKey || '' };
+}
+
 /* ---------------- Supabase auth ---------------- */
 
-function readSession() { return store.get('session'); }
+// Access tokens stay in memory; only the refresh token, email and user id are saved.
+let session = null;
+
+function readSession() { return session; }
 function writeSession(j) {
-  const s = {
+  session = {
     access_token: j.access_token,
     refresh_token: j.refresh_token,
     expires_at: Date.now() + (j.expires_in || 3600) * 1000,
-    email: j.user?.email || readSession()?.email || '',
-    user_id: j.user?.id || readSession()?.user_id || '',
+    email: j.user?.email || session?.email || '',
+    user_id: j.user?.id || session?.user_id || '',
   };
-  store.set('session', s);
-  return s;
+  const { refresh_token, email, user_id } = session;
+  setSecret('session', { refresh_token, email, user_id }).catch((e) => console.warn('saving session', e));
+  return session;
 }
 
 export function sessionEmail() { return readSession()?.email || ''; }
@@ -104,7 +169,10 @@ export async function signIn(email, password) {
   return writeSession(j);
 }
 
-export function signOut() { store.del('session'); }
+export function signOut() {
+  session = null;
+  setSecret('session', null).catch((e) => console.warn('clearing session', e));
+}
 
 let refreshing = null;
 async function accessToken() {
