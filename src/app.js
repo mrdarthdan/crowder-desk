@@ -9,6 +9,7 @@ import {
 } from './api.js';
 import { weatherInfo, ui } from './icons.js';
 import { sunTimes, moonIllumination, moonTimes, phaseName, moonSvg, colorOutlook } from './sky.js';
+import { fetchShoot, upcoming, verdict, SESSIONS, SHOOT_URL } from './shoot.js';
 
 const JOBTRACKER_URL = 'https://darthdan.vpages.site/job-tracker/';
 
@@ -19,8 +20,8 @@ let settings = loadSettings();
 const state = {
   recipes: [], sections: [], favorites: new Set(),
   briefing: null, stories: [], newsIdx: 0,
-  sky: null, jobs: null, vault: null,
-  last: { weather: 0, light: 0, blog: 0, jobs: 0, recipe: 0, news: 0 },
+  sky: null, jobs: null, vault: null, shoot: null,
+  last: { weather: 0, light: 0, shoot: 0, blog: 0, jobs: 0, recipe: 0, news: 0 },
   day: localDateKey(),
 };
 
@@ -91,6 +92,7 @@ function applyLook() {
   document.documentElement.style.setProperty('--glass', settings.opacity);
   $('#card-weather').hidden = !settings.show.weather;
   $('#card-light').hidden = !settings.show.light;
+  $('#card-shoot').hidden = !settings.show.shoot;
   $('#card-note').hidden = !settings.show.note;
   $('#card-jobs').hidden = !settings.show.jobs;
   $('#card-blog').hidden = !settings.show.blog;
@@ -146,6 +148,7 @@ async function refreshAll(manual = false) {
   const jobs = [];
   if (settings.show.weather) jobs.push(loadWeather());
   if (settings.show.light) jobs.push(loadLight());
+  if (settings.show.shoot) jobs.push(loadShoot());
   if (settings.show.jobs) jobs.push(loadJobs());
   if (settings.show.blog) jobs.push(loadBlog());
   if (settings.show.recipe) jobs.push(loadRecipes());
@@ -157,7 +160,7 @@ async function refreshAll(manual = false) {
 }
 
 const MIN = 60_000;
-const EVERY = { weather: 15, light: 30, jobs: 15, blog: 10, news: 30, recipe: 360 }; // refresh, minutes
+const EVERY = { weather: 15, light: 30, shoot: 30, jobs: 15, blog: 10, news: 30, recipe: 360 }; // refresh, minutes
 const RETRY = 3; // minutes to wait after a failed refresh
 
 function tick() {
@@ -173,6 +176,8 @@ function tick() {
   if (due('weather')) loadWeather();
   if (due('light')) loadLight();
   else if (settings.show.light) renderLight(); // keep "this evening / tomorrow" current
+  if (due('shoot')) loadShoot();
+  else if (settings.show.shoot) renderShoot(); // drop sessions that have passed
   if (due('jobs')) loadJobs();
   if (due('blog')) loadBlog();
   if (due('news')) loadNews();
@@ -394,6 +399,78 @@ function renderLight() {
       <div>${esc(riseSet)}${next ? ` · ${esc(next)}` : ''}</div></div>
     </div>
     ${stars}`;
+}
+
+/* ================= shoot planner ================= */
+
+function loadShoot() {
+  const body = $('#shoot-body');
+  if (!signedIn()) {
+    body.innerHTML = `<div class="signin-cta"><span>Sign in to see tonight's best light at your spots.</span>
+      <button class="btn primary" id="shoot-signin">Sign in</button></div>`;
+    $('#shoot-signin').addEventListener('click', openSettings);
+    setStale('shoot', 0);
+    return;
+  }
+  return loadCard('shoot', {
+    key: userId(),
+    get: fetchShoot,
+    render: (data) => { state.shoot = data; renderShoot(); },
+    failMsg: () => 'Couldn\'t reach the Shoot Planner.',
+    onError: (e) => {
+      if (e.status !== 401 && e.status !== 403) return false;
+      signOut();
+      loadShoot();
+      return true;
+    },
+  });
+}
+
+function renderShoot() {
+  const data = state.shoot, body = $('#shoot-body');
+  if (!data) return;
+  if (!data.spots.length) {
+    body.innerHTML = `<div class="empty">No spots yet, or this account isn't on the Shoot Planner.</div>`;
+    return;
+  }
+  const bets = upcoming(data);
+  const dayWord = (p) => {
+    const d = p.window[0], now = new Date();
+    if (d.toDateString() === now.toDateString()) return p.session === 'sunrise' ? 'This morning' : 'Tonight';
+    return p.session === 'sunrise' ? 'Tomorrow AM' : 'Tomorrow';
+  };
+  const range = (p) => TIME_FMT.formatRange(p.window[0], p.window[1]);
+  let html = '';
+  if (bets.length) {
+    const b = bets[0], v = verdict(b.score);
+    html += `<div class="sp-best">
+      <div class="sp-score ${v.cls}">${b.score}<small>${v.label}</small></div>
+      <div class="sp-main">
+        <b>${esc(b.spot.name)}</b>
+        <div class="sp-when">${esc(dayWord(b))} · ${esc(SESSIONS[b.session])} · ${esc(range(b))}</div>
+        <div class="sp-why">${esc([b.reasons[0], b.facing].filter(Boolean).join('. '))}</div>
+        ${b.warn.length ? `<div class="sp-warn">${esc(b.warn.join(' · '))}</div>` : ''}
+      </div>
+    </div>`;
+    const more = bets.slice(1, 4);
+    if (more.length) {
+      html += `<ul class="sp-more">${more.map((p) => {
+        const v2 = verdict(p.score);
+        return `<li><span class="sp-chip ${v2.cls}">${p.score}</span><span class="sp-name">${esc(p.spot.name)}</span><span class="sp-t">${esc(dayWord(p))} · ${esc(SESSIONS[p.session])}</span></li>`;
+      }).join('')}</ul>`;
+    }
+  } else {
+    html += `<div class="empty">No forecast for your spots right now.</div>`;
+  }
+  const o = data.outings[0];
+  if (o) {
+    const s = data.spots.find((x) => x.id === o.spot_id);
+    const packed = o.packing.filter((x) => x.done).length, shots = o.shot_list.length;
+    html += `<div class="sp-outing"><span>Next outing</span>
+      <b>${esc(s?.name || 'Spot')}</b> · ${esc(WEEKDAY.format(parseDay(o.date)))} ${esc(SESSIONS[o.session] || o.session)}
+      <small>Packed ${packed}/${o.packing.length}${shots ? ` · ${shots} shot${shots === 1 ? '' : 's'} planned` : ''}</small></div>`;
+  }
+  body.innerHTML = html;
 }
 
 /* ================= quick note (Obsidian) ================= */
@@ -941,6 +1018,7 @@ function initSettings() {
       $('#set-pass').value = '';
       renderAccount();
       loadBlog();
+      loadShoot();
       loadRecipes(); // picks up favorites
     } catch (e) { err.textContent = e.message; }
   });
@@ -950,6 +1028,7 @@ function initSettings() {
     state.favorites = new Set();
     renderAccount();
     loadBlog();
+    loadShoot();
     renderRecipe();
   });
 
@@ -1053,7 +1132,7 @@ function initSettings() {
 /* ================= card order ================= */
 
 const CARD_NAMES = {
-  weather: 'Weather', light: 'Light', note: 'Quick note', blog: 'Blog Plan',
+  weather: 'Weather', light: 'Light', shoot: 'Shoot Planner', note: 'Quick note', blog: 'Blog Plan',
   jobs: 'Job search', recipe: "Today's recipe", news: 'Picket Station',
 };
 
