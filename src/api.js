@@ -17,8 +17,8 @@ export const DEFAULTS = {
   units: 'F',
   windowMode: 'bottom', // bottom | normal | top
   opacity: 0.86,
-  show: { weather: true, light: true, note: true, blog: true, jobs: true, recipe: true, news: true },
-  order: ['weather', 'light', 'note', 'blog', 'jobs', 'recipe', 'news'],
+  show: { weather: true, light: true, shoot: true, note: true, blog: true, jobs: true, recipe: true, news: true },
+  order: ['weather', 'light', 'shoot', 'note', 'blog', 'jobs', 'recipe', 'news'],
   jobs: { url: '', key: '' },
   obsidian: {
     vault: 'C:\\Users\\dan\\Documents\\Obsidian\\Dan Crowder',
