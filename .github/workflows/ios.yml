@@ -7,6 +7,7 @@ name: Build iOS app
 on:
   push:
     branches: [ios]
+    paths-ignore: ['README.md']
   workflow_dispatch:
 
 jobs:
@@ -40,6 +41,12 @@ jobs:
       - name: App icons
         run: npx tauri icon app-icon.png
 
+      # Home screen / lock screen widget (ios-widget/), added as a WidgetKit extension.
+      - name: Add the widget to the Xcode project
+        run: |
+          python3 scripts/ios-add-widget.py
+          cd src-tauri/gen/apple && xcodegen generate --spec project.yml
+
       - name: Build (unsigned)
         run: npx tauri ios build --ci --target aarch64 --no-sign
 
@@ -60,6 +67,7 @@ jobs:
             (cd pkg && zip -qry ../out/CrowderDesk.ipa Payload)
           fi
           unzip -l out/CrowderDesk.ipa | grep -q 'Payload/.*\.app/Info.plist' || { echo "::error::The .ipa has no app inside."; exit 1; }
+          unzip -l out/CrowderDesk.ipa | grep -q 'PlugIns/CrowderDeskWidget\.appex/' || { echo "::error::The widget extension is missing from the .ipa."; unzip -l out/CrowderDesk.ipa | head -40; exit 1; }
           ls -lh out/CrowderDesk.ipa
 
       - name: Upload the .ipa
