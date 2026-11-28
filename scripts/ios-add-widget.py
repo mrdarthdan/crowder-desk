@@ -5,6 +5,9 @@ that `tauri ios init` generates, then the workflow re-runs XcodeGen.
 Tauri has no setting for app extensions, so this edits gen/apple/project.yml:
 - appends a WidgetKit extension target built from ios-widget/Sources
 - makes the app target depend on it, which embeds it in the app's PlugIns folder
+- gives the app and the widget the App Group they share data through
+  (ios-widget/*.entitlements; the workflow ad-hoc signs with them so sideloading
+  tools see the request)
 """
 import pathlib, plistlib, re, sys
 
@@ -62,6 +65,20 @@ text = text.rstrip("\n") + f"""
     dependencies:
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
+    entitlements:
+      path: ../../../ios-widget/widget.entitlements
 """
+
+# 3) the app's entitlements: Tauri's file plus the App Group.
+m_ent = re.search(r"entitlements:\s*\n\s*path:\s*(\S+)", text)
+app_ent = apple / (m_ent.group(1) if m_ent else f"{app}/{app}.entitlements")
+ent = {}
+if app_ent.exists() and app_ent.read_bytes().strip():
+    ent = plistlib.loads(app_ent.read_bytes())
+group = plistlib.loads(pathlib.Path("ios-widget/app.entitlements").read_bytes())
+ent.update(group)
+app_ent.parent.mkdir(parents=True, exist_ok=True)
+app_ent.write_bytes(plistlib.dumps(ent))
+
 spec.write_text(text)
 print(f"Added CrowderDeskWidget ({bundle_id}, {short}) to {app}.")

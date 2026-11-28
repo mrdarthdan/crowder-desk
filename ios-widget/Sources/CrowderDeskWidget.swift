@@ -39,6 +39,20 @@ struct DeskProvider: TimelineProvider {
 struct CrowderDeskWidgetBundle: WidgetBundle {
     var body: some Widget {
         CrowderDeskWidget()
+        CrowderPlansWidget()
+    }
+}
+
+struct CrowderPlansWidget: Widget {
+    let kind = "CrowderPlansWidget"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: DeskProvider()) { entry in
+            PlansWidgetView(entry: entry)
+        }
+        .configurationDisplayName("Crowder Desk Plans")
+        .description("Your next Blog Plan tasks and Shoot Planner outing. Uses the sign-in from the app.")
+        .supportedFamilies([.systemMedium, .systemLarge, .accessoryRectangular])
     }
 }
 
@@ -148,7 +162,7 @@ struct DeskWidgetView: View {
 }
 
 private func nextLight(_ entry: DeskEntry) -> LightWindow? {
-    Light.upcoming(from: entry.date, lat: Config.lat, lon: Config.lon).first
+    Light.upcoming(from: entry.date, lat: entry.snap.latitude, lon: entry.snap.longitude).first
 }
 
 private func lightLine(_ w: LightWindow, at now: Date) -> String {
@@ -240,7 +254,7 @@ struct LightBlock: View {
     let entry: DeskEntry
     var count = 2
     var body: some View {
-        let windows = Array(Light.upcoming(from: entry.date, lat: Config.lat, lon: Config.lon).prefix(count))
+        let windows = Array(Light.upcoming(from: entry.date, lat: entry.snap.latitude, lon: entry.snap.longitude).prefix(count))
         VStack(alignment: .leading, spacing: 3) {
             Text("LIGHT").font(.system(size: 9, weight: .semibold)).kerning(1.4).foregroundColor(Palette.ember)
             ForEach(windows, id: \.self) { w in
@@ -249,7 +263,7 @@ struct LightBlock: View {
                     Text(lightLine(w, at: entry.date)).font(.caption2).foregroundColor(Palette.ink).lineLimit(1)
                 }
             }
-            if let s = Light.nextSunEvent(from: entry.date, lat: Config.lat, lon: Config.lon) {
+            if let s = Light.nextSunEvent(from: entry.date, lat: entry.snap.latitude, lon: entry.snap.longitude) {
                 Text("\(s.label) \(Fmt.timeAP.string(from: s.at))").font(.caption2).foregroundColor(Palette.ink3)
             }
         }
@@ -270,7 +284,7 @@ struct SmallView: View {
     let entry: DeskEntry
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Header(text: Config.placeName)
+            Header(text: entry.snap.placeName)
             if let w = entry.snap.weather { WeatherBlock(w: w) } else { Text("No weather yet").font(.caption) }
             Spacer(minLength: 0)
             if let l = nextLight(entry) {
@@ -307,7 +321,7 @@ struct MediumView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
-                Header(text: Config.placeName)
+                Header(text: entry.snap.placeName)
                 if let w = entry.snap.weather { WeatherBlock(w: w) } else { Text("No weather yet").font(.caption) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -330,7 +344,7 @@ struct LargeView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Header(text: Config.placeName)
+                    Header(text: entry.snap.placeName)
                     if let w = entry.snap.weather { WeatherBlock(w: w, big: 38) } else { Text("No weather yet").font(.caption) }
                 }
                 Spacer()
@@ -355,6 +369,137 @@ struct LargeView: View {
                         .font(.system(size: 9, weight: .semibold)).kerning(1.4).foregroundColor(Palette.sky)
                     Text(s.headline).font(.subheadline).lineLimit(3)
                 }
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundColor(Palette.ink)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+// MARK: - Plans widget
+
+enum PlanFmt {
+    static let short: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEE MMM d"; return f
+    }()
+    static let sessions = ["sunrise": "Sunrise", "sunset": "Sunset", "blue": "Blue hour", "night": "Night sky"]
+
+    /// "Today", "Tomorrow", "Sat Nov 29", or "Overdue · Nov 20"
+    static func when(_ key: String?, now: Date) -> String? {
+        guard let key = key, let d = Fmt.dayKey.date(from: key) else { return nil }
+        let cal = Calendar.current
+        let days = cal.dateComponents([.day], from: cal.startOfDay(for: now), to: cal.startOfDay(for: d)).day ?? 0
+        if days < 0 { return "Overdue · \(short.string(from: d))" }
+        if days == 0 { return "Today" }
+        if days == 1 { return "Tomorrow" }
+        return short.string(from: d)
+    }
+
+    static func outing(_ o: Outing, now: Date) -> String {
+        let when = PlanFmt.when(o.date, now: now) ?? o.date
+        let session = sessions[o.session] ?? o.session.capitalized
+        return session.isEmpty ? when : "\(when) · \(session)"
+    }
+}
+
+struct PlansMessage: View {
+    let status: Plans.Status
+    var body: some View {
+        switch status {
+        case .noGroup:
+            Text("The widget can't see the app's sign-in on this install (no App Group). See Settings in Crowder Desk.")
+        case .signedOut:
+            Text("Sign in to Blog Plan in Crowder Desk → Settings.")
+        case .offline:
+            Text("Couldn't reach Blog Plan. Trying again soon.")
+        case .ok:
+            EmptyView()
+        }
+    }
+}
+
+struct PlansWidgetView: View {
+    @Environment(\.widgetFamily) var family
+    let entry: DeskEntry
+
+    var body: some View {
+        switch family {
+        case .accessoryRectangular: PlansRectangular(entry: entry).widgetBackground(.clear)
+        default: PlansHome(entry: entry, large: family == .systemLarge).widgetBackground(Palette.bg)
+        }
+    }
+}
+
+struct PlansRectangular: View {
+    let entry: DeskEntry
+    var body: some View {
+        let plans = entry.snap.plans
+        VStack(alignment: .leading, spacing: 1) {
+            if let p = plans, p.status == .ok {
+                if let o = p.outing {
+                    Label(o.spot, systemImage: "camera").font(.headline).lineLimit(1)
+                    Text(PlanFmt.outing(o, now: entry.date)).font(.caption).lineLimit(1)
+                }
+                ForEach(Array(p.tasks.prefix(p.outing == nil ? 3 : 1)), id: \.self) { t in
+                    Text("• \(t.title)").font(.caption).lineLimit(1)
+                }
+                if p.outing == nil && p.tasks.isEmpty {
+                    Text("Nothing planned").font(.caption)
+                }
+            } else {
+                Text("Crowder Desk Plans").font(.headline)
+                PlansMessage(status: plans?.status ?? .signedOut).font(.caption2).lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct PlansHome: View {
+    let entry: DeskEntry
+    let large: Bool
+    var body: some View {
+        let plans = entry.snap.plans
+        VStack(alignment: .leading, spacing: 8) {
+            if let p = plans, p.status == .ok {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("BLOG PLAN").font(.system(size: 9, weight: .semibold)).kerning(1.4).foregroundColor(Palette.ember)
+                    if p.tasks.isEmpty {
+                        Text("No open tasks").font(.caption).foregroundColor(Palette.ink3)
+                    }
+                    ForEach(Array(p.tasks.prefix(large ? 4 : 2)), id: \.self) { t in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "circle").font(.system(size: 9)).foregroundColor(Palette.ink3)
+                            Text(t.title).font(.caption).lineLimit(1)
+                            Spacer(minLength: 4)
+                            if let w = PlanFmt.when(t.due, now: entry.date) {
+                                Text(w).font(.caption2)
+                                    .foregroundColor(w.hasPrefix("Overdue") || w == "Today" ? Palette.ember : Palette.ink3)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("NEXT OUTING").font(.system(size: 9, weight: .semibold)).kerning(1.4).foregroundColor(Palette.sky)
+                    if let o = p.outing {
+                        Text(o.spot).font(.subheadline.weight(.medium)).lineLimit(1)
+                        Text(PlanFmt.outing(o, now: entry.date)).font(.caption2).foregroundColor(Palette.ink2)
+                    } else {
+                        Text("No outing planned").font(.caption).foregroundColor(Palette.ink3)
+                    }
+                }
+                if large, let l = Light.upcoming(from: entry.date, lat: entry.snap.latitude, lon: entry.snap.longitude).first {
+                    HStack(spacing: 5) {
+                        Circle().fill(l.isGolden ? Palette.ember : Palette.sky).frame(width: 6, height: 6)
+                        Text(l.start <= entry.date ? "\(l.kind) now · until \(Fmt.timeAP.string(from: l.end))" : "\(l.kind) \(Fmt.range(l))")
+                            .font(.caption2).foregroundColor(Palette.ink2)
+                    }
+                }
+            } else {
+                Header(text: "Crowder Desk Plans")
+                PlansMessage(status: plans?.status ?? .signedOut).font(.caption).foregroundColor(Palette.ink2)
             }
             Spacer(minLength: 0)
         }

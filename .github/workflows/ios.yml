@@ -50,24 +50,34 @@ jobs:
       - name: Build (unsigned)
         run: npx tauri ios build --ci --target aarch64 --no-sign
 
-      # Use the .ipa Tauri made; if there isn't one, wrap the built .app as an .ipa.
+      # Unpack the build, ad-hoc sign the widget and the app with their entitlements
+      # (only the App Group), and pack it again. An unsigned app carries no entitlements,
+      # and Sideloadly/AltStore only grant what the signature asks for.
       - name: Package the .ipa
         run: |
           set -euo pipefail
-          mkdir -p out
+          rm -rf out pkg && mkdir -p out pkg
           ipa=$(find src-tauri/gen/apple/build -name '*.ipa' -print -quit || true)
           if [ -n "$ipa" ]; then
-            cp "$ipa" out/CrowderDesk.ipa
+            (cd pkg && unzip -q "../$ipa")
           else
             app=$(find src-tauri/gen/apple/build -path '*iphoneos*' -name '*.app' -type d -print -quit || true)
             [ -z "$app" ] && app=$(find src-tauri/gen/apple/build -name '*.app' -type d -print -quit)
             [ -z "$app" ] && { echo "::error::No .ipa or .app was built."; find src-tauri/gen/apple/build -maxdepth 4; exit 1; }
-            mkdir -p pkg/Payload
-            cp -R "$app" pkg/Payload/
-            (cd pkg && zip -qry ../out/CrowderDesk.ipa Payload)
+            mkdir -p pkg/Payload && cp -R "$app" pkg/Payload/
           fi
-          unzip -l out/CrowderDesk.ipa | grep -q 'Payload/.*\.app/Info.plist' || { echo "::error::The .ipa has no app inside."; exit 1; }
-          unzip -l out/CrowderDesk.ipa | grep -q 'PlugIns/CrowderDeskWidget\.appex/' || { echo "::error::The widget extension is missing from the .ipa."; unzip -l out/CrowderDesk.ipa | head -40; exit 1; }
+          app=$(find pkg/Payload -maxdepth 1 -name '*.app' -type d -print -quit)
+          appex="$app/PlugIns/CrowderDeskWidget.appex"
+          [ -d "$appex" ] || { echo "::error::The widget extension is missing from the app."; ls -la "$app"; exit 1; }
+          if [ -d "$app/Frameworks" ]; then
+            find "$app/Frameworks" -maxdepth 1 \( -name '*.dylib' -o -name '*.framework' \) -exec codesign -f -s - {} \;
+          fi
+          codesign -f -s - --entitlements ios-widget/widget.entitlements "$appex"
+          codesign -f -s - --entitlements ios-widget/app.entitlements "$app"
+          echo "Widget entitlements:"; codesign -d --entitlements - --xml "$appex" | plutil -p - || true
+          echo "App entitlements:"; codesign -d --entitlements - --xml "$app" | plutil -p - || true
+          (cd pkg && zip -qry ../out/CrowderDesk.ipa Payload)
+          unzip -l out/CrowderDesk.ipa | grep -q 'PlugIns/CrowderDeskWidget\.appex/' || { echo "::error::The widget extension is missing from the .ipa."; exit 1; }
           ls -lh out/CrowderDesk.ipa
 
       - name: Upload the .ipa

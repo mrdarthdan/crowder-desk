@@ -1,5 +1,5 @@
 import {
-  inTauri, isMobile, vaultName, sendNoteToObsidian, loadSettings, saveSettings, store, cache, openUrl, currentWindow,
+  inTauri, isMobile, vaultName, sendNoteToObsidian, setSharedSettings, sharedGroupName, loadSettings, saveSettings, store, cache, openUrl, currentWindow,
   signIn, signOut, signedIn, sessionEmail, userId, initSecrets, getSecret, setSecret,
   fetchWeather, searchPlaces, fetchTasks, setTaskDone,
   fetchRecipeIndex, fetchSections, fetchFavorites, fetchBriefing,
@@ -968,6 +968,7 @@ async function openSettings() {
   $('#vault-msg').textContent = '';
   $$('#set-note-style button').forEach((b) => b.classList.toggle('on', b.dataset.value === settings.obsidian.style));
   $('#sheet').hidden = false;
+  renderWidgetStatus();
   if (inTauri && !isMobile) {
     try { $('#set-autostart').checked = await window.__TAURI__.core.invoke('plugin:autostart|is_enabled'); }
     catch { $('#set-autostart').disabled = true; }
@@ -978,7 +979,23 @@ async function openSettings() {
 
 function closeSettings() { $('#sheet').hidden = true; }
 
-function persist() { saveSettings(settings); }
+function persist() { saveSettings(settings); shareWithWidget(); }
+
+/** iPhone: what the home screen widget needs from Settings (the session is shared in api.js). */
+function shareWithWidget() {
+  if (!isMobile) return;
+  setSharedSettings({ location: settings.location, units: settings.units, newsDesk: settings.newsDesk });
+}
+
+async function renderWidgetStatus() {
+  const el = $('#widget-status');
+  if (!el || !isMobile) return;
+  const group = await sharedGroupName();
+  el.className = group ? 'hint' : 'hint err';
+  el.textContent = group
+    ? `The widget uses this location, units, news desk and Blog Plan sign-in (shared through ${group}).`
+    : 'The widget can\'t see these settings: this install has no App Group, so it shows Mesa and no Blog Plan or Shoot Planner. Installing with AltStore usually fixes this.';
+}
 
 function initSettings() {
   $$('.seg[data-setting]').forEach((seg) => {
@@ -1291,6 +1308,7 @@ function initUpdates() {
   settings.jobs.key = jobsKey;
   if (getSecret('jobs-key')) persist(); // the key is stored safely; drop any old copy in settings
 }
+shareWithWidget();
 initChrome();
 initSettings();
 initNote();

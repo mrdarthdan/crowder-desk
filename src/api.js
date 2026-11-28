@@ -137,13 +137,22 @@ export async function initSecrets(legacyJobsKey = '') {
   // Until the session is restored above, fall back to the old copy so nothing signs out.
   const saved = secrets.session || (old?.refresh_token ? old : null);
   session = saved ? { ...saved, access_token: '', expires_at: 0 } : null;
+  sessionAt = saved?.at || 0;
   return { jobsKey: secrets['jobs-key'] || legacyJobsKey || '' };
 }
 
 /* ---------------- Supabase auth ---------------- */
 
 // Access tokens stay in memory; only the refresh token, email and user id are saved.
+// (On iPhone the session is also in the file shared with the widget; see syncShared.)
 let session = null;
+let sessionAt = 0; // when the session last changed: sign-in, refresh or sign-out
+
+function saveSessionSecret() {
+  if (!session) return setSecret('session', null).catch((e) => console.warn('clearing session', e));
+  const { refresh_token, email, user_id } = session;
+  return setSecret('session', { refresh_token, email, user_id, at: sessionAt }).catch((e) => console.warn('saving session', e));
+}
 
 function readSession() { return session; }
 function writeSession(j) {
@@ -154,8 +163,9 @@ function writeSession(j) {
     email: j.user?.email || session?.email || '',
     user_id: j.user?.id || session?.user_id || '',
   };
-  const { refresh_token, email, user_id } = session;
-  setSecret('session', { refresh_token, email, user_id }).catch((e) => console.warn('saving session', e));
+  sessionAt = Date.now();
+  saveSessionSecret();
+  syncShared();
   return session;
 }
 
@@ -176,7 +186,9 @@ export async function signIn(email, password) {
 
 export function signOut() {
   session = null;
-  setSecret('session', null).catch((e) => console.warn('clearing session', e));
+  sessionAt = Date.now();
+  saveSessionSecret();
+  syncShared();
 }
 
 let refreshing = null;
@@ -187,10 +199,15 @@ async function accessToken() {
   if (!refreshing) {
     refreshing = (async () => {
       try {
+        // The widget may have refreshed since; a used refresh token would sign both out.
+        await syncShared({ write: false });
+        const cur = readSession();
+        if (!cur) return null;
+        if (Date.now() < cur.expires_at - 60_000) return cur.access_token;
         const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
           method: 'POST',
           headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: s.refresh_token }),
+          body: JSON.stringify({ refresh_token: cur.refresh_token }),
         });
         if (r.status === 400 || r.status === 401) { signOut(); return null; }
         if (!r.ok) return null; // offline or server hiccup: keep the session, try later
@@ -199,6 +216,57 @@ async function accessToken() {
     })();
   }
   return refreshing;
+}
+
+/* ---------------- data shared with the iPhone widget ---------------- */
+// shared.json in the App Group folder: location, units and news desk for the widget, plus
+// the Blog Plan session. The widget renews the session when it runs out and writes it back,
+// so whichever side changed it last (sessionAt) wins.
+
+let sharedSettings = {};
+let sharedGroup; // undefined = not checked yet, null = no App Group
+let syncing = Promise.resolve();
+
+/** iPhone only: the App Group the widget data goes to, or null if this install has none. */
+export async function sharedGroupName() {
+  if (!inTauri || !isMobile) return null;
+  if (sharedGroup === undefined) {
+    try { sharedGroup = await tauri.core.invoke('shared_group'); } catch { sharedGroup = null; }
+  }
+  return sharedGroup;
+}
+
+export function setSharedSettings(s) {
+  sharedSettings = s;
+  return syncShared();
+}
+
+/** Adopts a newer session from the widget, then (unless write is false) writes ours. */
+export function syncShared({ write = true } = {}) {
+  if (!inTauri || !isMobile) return Promise.resolve();
+  syncing = syncing.then(async () => {
+    try {
+      if (!(await sharedGroupName())) return;
+      const raw = await tauri.core.invoke('shared_read');
+      const cur = raw ? JSON.parse(raw) : null;
+      if (cur && (cur.sessionAt || 0) > sessionAt) {
+        sessionAt = cur.sessionAt;
+        session = cur.session?.refresh_token ? { ...cur.session } : null;
+        await saveSessionSecret();
+      }
+      if (!write) return;
+      const out = {
+        ...(cur || {}), ...sharedSettings,
+        session: session ? {
+          access_token: session.access_token || '', refresh_token: session.refresh_token,
+          expires_at: session.expires_at || 0, email: session.email || '', user_id: session.user_id || '',
+        } : null,
+        sessionAt, updated: Date.now(),
+      };
+      await tauri.core.invoke('shared_write', { json: JSON.stringify(out) });
+    } catch (e) { console.warn('widget sync', e); }
+  });
+  return syncing;
 }
 
 /** PostgREST call. schema 'plico' uses the profile headers. */

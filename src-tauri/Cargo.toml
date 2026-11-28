@@ -20,6 +20,12 @@ serde_json = "1"
 # Secrets: Windows Credential Manager on the desktop, the Keychain on iPhone.
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
 
+# iPhone only: finding the App Group folder the app shares with its home screen widget.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSFileManager", "NSURL", "NSString"] }
+plist = "1"
+
 # Desktop-only plugins (tray widget, window position, autostart, Ctrl+Alt+Space, updater).
 # The iPhone build leaves these out.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

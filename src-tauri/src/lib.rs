@@ -38,6 +38,126 @@ fn secret_delete(name: String) -> Result<(), String> {
     }
 }
 
+/* ---------------- data shared with the iPhone widget ---------------- */
+// The iPhone app writes its location, units, news desk and Blog Plan session to
+// shared.json in an App Group folder that the widget extension can also read.
+// Sideloading tools rename the App Group when they re-sign, so the real name is read
+// from the app's provisioning profile (Sideloadly) or Info.plist (AltStore).
+
+#[cfg(target_os = "ios")]
+mod shared {
+    use objc2_foundation::{NSFileManager, NSString};
+    use std::path::{Path, PathBuf};
+
+    pub const BUILD_GROUP: &str = "group.com.crowder.desk";
+
+    fn groups_in(v: &plist::Value) -> Vec<String> {
+        v.as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_string().map(str::to_string)).collect())
+            .unwrap_or_default()
+    }
+
+    /// App Group names this copy of the app may have been given, most likely first.
+    fn candidates(app: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(info) = plist::Value::from_file(app.join("Info.plist")) {
+            if let Some(v) = info.as_dictionary().and_then(|d| d.get("ALTAppGroups")) {
+                out.extend(groups_in(v));
+            }
+        }
+        if let Ok(bytes) = std::fs::read(app.join("embedded.mobileprovision")) {
+            // The profile is a signed blob with a plain XML plist inside it.
+            let text = String::from_utf8_lossy(&bytes);
+            if let (Some(a), Some(b)) = (text.find("<?xml"), text.rfind("</plist>")) {
+                if a < b {
+                    if let Ok(v) = plist::from_bytes::<plist::Value>(text[a..b + 8].as_bytes()) {
+                        if let Some(g) = v
+                            .as_dictionary()
+                            .and_then(|d| d.get("Entitlements"))
+                            .and_then(|e| e.as_dictionary())
+                            .and_then(|e| e.get("com.apple.security.application-groups"))
+                        {
+                            out.extend(groups_in(g));
+                        }
+                    }
+                }
+            }
+        }
+        out.push(BUILD_GROUP.to_string());
+        // Prefer groups that are ours, keep the order otherwise.
+        out.sort_by_key(|g| !g.contains("crowder"));
+        out.dedup();
+        out
+    }
+
+    /// The shared folder and the App Group it belongs to, if the signature grants one.
+    pub fn folder() -> Option<(String, PathBuf)> {
+        let exe = std::env::current_exe().ok()?;
+        let app = exe.parent()?;
+        #[allow(unused_unsafe)]
+        let fm = unsafe { NSFileManager::defaultManager() };
+        for group in candidates(app) {
+            let name = NSString::from_str(&group);
+            #[allow(unused_unsafe)]
+            let path = unsafe {
+                fm.containerURLForSecurityApplicationGroupIdentifier(&name)
+                    .and_then(|u| u.path())
+            };
+            if let Some(path) = path {
+                return Some((group, PathBuf::from(path.to_string())));
+            }
+        }
+        None
+    }
+
+    pub fn file() -> Option<PathBuf> {
+        folder().map(|(_, dir)| dir.join("shared.json"))
+    }
+}
+
+/// Which App Group the widget data goes to, or null when the app wasn't given one.
+#[tauri::command]
+fn shared_group() -> Option<String> {
+    #[cfg(target_os = "ios")]
+    return shared::folder().map(|(g, _)| g);
+    #[cfg(not(target_os = "ios"))]
+    return None;
+}
+
+#[tauri::command]
+fn shared_read() -> Result<Option<String>, String> {
+    #[cfg(target_os = "ios")]
+    {
+        let Some(path) = shared::file() else { return Ok(None) };
+        return match std::fs::read_to_string(&path) {
+            Ok(s) => Ok(Some(s)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+        };
+    }
+    #[cfg(not(target_os = "ios"))]
+    Ok(None)
+}
+
+/// Writes shared.json (whole file, swapped in atomically). Returns false without an App Group.
+#[tauri::command]
+fn shared_write(json: String) -> Result<bool, String> {
+    #[cfg(target_os = "ios")]
+    {
+        serde_json::from_str::<serde_json::Value>(&json).map_err(|e| e.to_string())?;
+        let Some(path) = shared::file() else { return Ok(false) };
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json.as_bytes()).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = json;
+        Ok(false)
+    }
+}
+
 /* ---------------- updates (desktop only; the iPhone build is reinstalled from GitHub) ---------------- */
 
 /// Returns the newer version on offer, if any.
@@ -334,7 +454,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_recipe, vault_info, append_note,
             secret_get, secret_set, secret_delete,
-            check_update, install_update
+            check_update, install_update,
+            shared_group, shared_read, shared_write
         ]);
     #[cfg(desktop)]
     let builder = builder
