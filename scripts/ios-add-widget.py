@@ -66,7 +66,9 @@ text = text.rstrip("\n") + f"""
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
     entitlements:
-      path: ../../../ios-widget/widget.entitlements
+      path: CrowderDeskWidget/CrowderDeskWidget.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.crowder.desk]
 """
 
 # 3) the app's entitlements: Tauri's file plus the App Group.

@@ -72,10 +72,15 @@ jobs:
           if [ -d "$app/Frameworks" ]; then
             find "$app/Frameworks" -maxdepth 1 \( -name '*.dylib' -o -name '*.framework' \) -exec codesign -f -s - {} \;
           fi
+          plutil -lint ios-widget/widget.entitlements ios-widget/app.entitlements
+          grep -q group.com.crowder.desk ios-widget/widget.entitlements || { echo "::error::ios-widget/widget.entitlements lost its App Group."; exit 1; }
           codesign -f -s - --entitlements ios-widget/widget.entitlements "$appex"
           codesign -f -s - --entitlements ios-widget/app.entitlements "$app"
           echo "Widget entitlements:"; codesign -d --entitlements - --xml "$appex" | plutil -p - || true
           echo "App entitlements:"; codesign -d --entitlements - --xml "$app" | plutil -p - || true
+          for b in "$appex" "$app"; do
+            codesign -d --entitlements - --xml "$b" 2>/dev/null | grep -q group.com.crowder.desk || { echo "::error::$b was signed without the App Group."; exit 1; }
+          done
           (cd pkg && zip -qry ../out/CrowderDesk.ipa Payload)
           unzip -l out/CrowderDesk.ipa | grep -q 'PlugIns/CrowderDeskWidget\.appex/' || { echo "::error::The widget extension is missing from the .ipa."; exit 1; }
           ls -lh out/CrowderDesk.ipa
