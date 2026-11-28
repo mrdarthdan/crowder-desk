@@ -1,0 +1,70 @@
+name: Build iOS app
+
+# Builds an unsigned .ipa for sideloading. Download it from the run's artifacts and
+# install it with Sideloadly (or AltStore), which signs it with your Apple ID.
+# Free Apple ID signing lasts 7 days; re-sign the same .ipa to keep using it.
+
+on:
+  push:
+    branches: [ios]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install JS dependencies
+        run: npm install
+
+      - name: Install XcodeGen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+
+      # The Xcode project is generated fresh each run (src-tauri/gen is not committed).
+      - name: Create the Xcode project
+        run: npx tauri ios init --ci
+
+      - name: App icons
+        run: npx tauri icon app-icon.png
+
+      - name: Build (unsigned)
+        run: npx tauri ios build --ci --target aarch64 --no-sign
+
+      # Use the .ipa Tauri made; if there isn't one, wrap the built .app as an .ipa.
+      - name: Package the .ipa
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ipa=$(find src-tauri/gen/apple/build -name '*.ipa' -print -quit || true)
+          if [ -n "$ipa" ]; then
+            cp "$ipa" out/CrowderDesk.ipa
+          else
+            app=$(find src-tauri/gen/apple/build -path '*iphoneos*' -name '*.app' -type d -print -quit || true)
+            [ -z "$app" ] && app=$(find src-tauri/gen/apple/build -name '*.app' -type d -print -quit)
+            [ -z "$app" ] && { echo "::error::No .ipa or .app was built."; find src-tauri/gen/apple/build -maxdepth 4; exit 1; }
+            mkdir -p pkg/Payload
+            cp -R "$app" pkg/Payload/
+            (cd pkg && zip -qry ../out/CrowderDesk.ipa Payload)
+          fi
+          unzip -l out/CrowderDesk.ipa | grep -q 'Payload/.*\.app/Info.plist' || { echo "::error::The .ipa has no app inside."; exit 1; }
+          ls -lh out/CrowderDesk.ipa
+
+      - name: Upload the .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: crowder-desk-ios
+          path: out/CrowderDesk.ipa
+          retention-days: 30

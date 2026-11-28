@@ -1,5 +1,5 @@
 import {
-  inTauri, loadSettings, saveSettings, store, cache, openUrl, currentWindow,
+  inTauri, isMobile, vaultName, sendNoteToObsidian, loadSettings, saveSettings, store, cache, openUrl, currentWindow,
   signIn, signOut, signedIn, sessionEmail, userId, initSecrets, getSecret, setSecret,
   fetchWeather, searchPlaces, fetchTasks, setTaskDone,
   fetchRecipeIndex, fetchSections, fetchFavorites, fetchBriefing,
@@ -102,6 +102,7 @@ function applyLook() {
 }
 
 async function applyWindowMode() {
+  if (isMobile) return; // the iPhone app is a normal full-screen app
   const w = currentWindow();
   if (!w) return;
   try {
@@ -123,7 +124,7 @@ async function applyWindowMode() {
 let raised = false;
 async function raiseWindow() {
   const w = currentWindow();
-  if (!w || settings.windowMode !== 'bottom') return;
+  if (!w || isMobile || settings.windowMode !== 'bottom') return;
   raised = true;
   try {
     await w.setAlwaysOnBottom(false);
@@ -503,6 +504,19 @@ async function addNote() {
   if (!text) return;
   status.className = 'note-status';
   status.textContent = 'Adding…';
+  if (isMobile) {
+    try {
+      await sendNoteToObsidian(settings.obsidian.vault, settings.obsidian.target, settings.obsidian.inbox, noteLine(text));
+      box.value = '';
+      autosize(box);
+      status.className = 'note-status ok';
+      status.textContent = `Sent to ${settings.obsidian.target === 'daily' ? "today's daily note" : esc(settings.obsidian.inbox || 'Inbox.md')} in Obsidian`;
+    } catch (e) {
+      status.className = 'note-status err';
+      status.textContent = `Couldn't open Obsidian: ${e?.message || e}`;
+    }
+    return;
+  }
   try {
     const info = await currentVault();
     let note;
@@ -840,6 +854,7 @@ function renderRecipe() {
 }
 
 async function openRecipe(id) {
+  if (isMobile) { location.href = `recipe.html?id=${encodeURIComponent(id)}`; return; }
   if (inTauri) {
     try { await window.__TAURI__.core.invoke('open_recipe', { id }); return; } catch (e) { console.warn(e); }
   }
@@ -948,12 +963,12 @@ async function openSettings() {
   $('#set-jobs-url').value = settings.jobs.url;
   $('#set-jobs-key').value = settings.jobs.key;
   $('#jobs-msg').textContent = '';
-  $('#set-vault').value = settings.obsidian.vault;
+  $('#set-vault').value = isMobile ? vaultName(settings.obsidian.vault) : settings.obsidian.vault;
   $('#set-inbox').value = settings.obsidian.inbox;
   $('#vault-msg').textContent = '';
   $$('#set-note-style button').forEach((b) => b.classList.toggle('on', b.dataset.value === settings.obsidian.style));
   $('#sheet').hidden = false;
-  if (inTauri) {
+  if (inTauri && !isMobile) {
     try { $('#set-autostart').checked = await window.__TAURI__.core.invoke('plugin:autostart|is_enabled'); }
     catch { $('#set-autostart').disabled = true; }
   } else {
@@ -1059,6 +1074,11 @@ function initSettings() {
     settings.obsidian.vault = $('#set-vault').value.trim();
     persist();
     state.vault = null;
+    if (isMobile) {
+      msg.className = '';
+      msg.textContent = settings.obsidian.vault ? `Notes go to the "${vaultName(settings.obsidian.vault)}" vault in Obsidian.` : '';
+      return;
+    }
     try {
       const info = await currentVault();
       const where = `${info.daily_folder ? info.daily_folder + '/' : ''}${info.daily_format}.md`;
@@ -1160,6 +1180,7 @@ function saveOrderFromDom() {
 
 // Pointer-based dragging (HTML5 drag-and-drop is taken over by the window's file-drop handling on Windows).
 function initDrag() {
+  if (isMobile) return; // on a phone, reorder from Settings → Cards (dragging fights scrolling)
   for (const k of settings.order) {
     const card = $(`#card-${k}`);
     card.dataset.card = k;
@@ -1221,7 +1242,7 @@ function startDrag(e) {
 /* ================= updates ================= */
 
 async function checkUpdate(manual = false) {
-  if (!inTauri) return;
+  if (!inTauri || isMobile) return;
   const msg = $('#update-msg');
   if (manual) msg.textContent = 'Checking…';
   try {
@@ -1257,6 +1278,7 @@ function initUpdates() {
   $('#btn-update-check').addEventListener('click', () => checkUpdate(true));
   if (!inTauri) { $('#btn-update-check').disabled = true; return; }
   window.__TAURI__.app.getVersion().then((v) => { $('#app-version').textContent = `Crowder Desk ${v}`; }).catch(() => {});
+  if (isMobile) return; // new iPhone builds come from GitHub and are installed with Sideloadly
   setTimeout(checkUpdate, 30_000); // give the network a moment after Windows starts
   setInterval(checkUpdate, 6 * 60 * MIN);
 }

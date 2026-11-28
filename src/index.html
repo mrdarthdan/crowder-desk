@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Crowder Desk</title>
   <link rel="stylesheet" href="styles.css" />
   <script type="module" src="app.js"></script>
@@ -18,7 +18,7 @@
       <div class="tools">
         <button class="icon-btn" id="btn-refresh" title="Refresh"></button>
         <button class="icon-btn" id="btn-settings" title="Settings"></button>
-        <button class="icon-btn" id="btn-hide" title="Hide to tray"></button>
+        <button class="icon-btn desktop-only" id="btn-hide" title="Hide to tray"></button>
       </div>
     </header>
 
@@ -128,7 +128,7 @@
         <fieldset>
           <legend>Blog Plan account</legend>
           <div id="acct-out">
-            <p class="hint">Sign in with the email and password you use for Blog Plan and Crowder Kitchen. Only a sign-in token is kept on this computer, never your password.</p>
+            <p class="hint">Sign in with the email and password you use for Blog Plan and Crowder Kitchen. Only a sign-in token is kept on this device, never your password.</p>
             <label class="field"><span>Email</span><input id="set-email" type="email" autocomplete="username" /></label>
             <label class="field"><span>Password</span><input id="set-pass" type="password" autocomplete="current-password" /></label>
             <button class="btn primary" id="btn-signin">Sign in</button>
@@ -157,8 +157,8 @@
 
         <fieldset>
           <legend>Obsidian quick note</legend>
-          <label class="field"><span>Vault folder</span>
-            <div class="row"><input id="set-vault" type="text" /><button class="btn" id="btn-vault-check">Check</button></div>
+          <label class="field"><span class="desktop-only">Vault folder</span><span class="mobile-only">Vault name (as it appears in Obsidian on this phone)</span>
+            <div class="row"><input id="set-vault" type="text" autocapitalize="off" autocorrect="off" /><button class="btn desktop-only" id="btn-vault-check">Check</button></div>
             <small id="vault-msg"></small>
           </label>
           <label class="field"><span>Inbox note (inside the vault)</span><input id="set-inbox" type="text" placeholder="Inbox.md" /></label>
@@ -185,13 +185,13 @@
 
         <fieldset>
           <legend>Widget</legend>
-          <div class="field">
+          <div class="field desktop-only">
             <span>Placement</span>
             <div class="seg" data-setting="windowMode">
               <button data-value="bottom">On desktop</button><button data-value="normal">Normal</button><button data-value="top">Always on top</button>
             </div>
           </div>
-          <label class="field">
+          <label class="field desktop-only">
             <span>Background opacity</span>
             <input type="range" id="set-opacity" min="0.5" max="1" step="0.02" />
           </label>
@@ -199,18 +199,19 @@
             <span>Cards: tick to show, arrows to reorder</span>
             <ul class="order-list" id="order-list"></ul>
           </div>
-          <label class="check"><input type="checkbox" id="set-autostart" /> Start Crowder Desk when Windows starts</label>
+          <label class="check desktop-only"><input type="checkbox" id="set-autostart" /> Start Crowder Desk when Windows starts</label>
         </fieldset>
 
         <fieldset>
           <legend>About</legend>
           <div class="row about-row">
             <span id="app-version">Crowder Desk</span>
-            <button class="btn" id="btn-update-check">Check for updates</button>
+            <button class="btn desktop-only" id="btn-update-check">Check for updates</button>
           </div>
           <small class="hint" id="update-msg"></small>
         </fieldset>
-        <p class="hint small">Drag the widget by its top bar. Resize from any edge. Reorder cards by dragging the handle at the top of each card. Close it and it keeps running in the system tray. Press Ctrl+Alt+Space anywhere to bring it up with the cursor in Quick note.</p>
+        <p class="hint small mobile-only">Quick note opens Obsidian to add the line, using Obsidian's own Daily notes folder and date format. New versions of this app come from the "Build iOS app" run on GitHub; install them over the old one with Sideloadly so your settings stay.</p>
+        <p class="hint small desktop-only">Drag the widget by its top bar. Resize from any edge. Reorder cards by dragging the handle at the top of each card. Close it and it keeps running in the system tray. Press Ctrl+Alt+Space anywhere to bring it up with the cursor in Quick note.</p>
       </div>
     </div>
   </div>

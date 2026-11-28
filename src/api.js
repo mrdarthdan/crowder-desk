@@ -10,6 +10,11 @@ export const PICKET_URL = 'https://darthdan.vpages.site/news-briefing/';
 const tauri = window.__TAURI__;
 export const inTauri = !!tauri;
 
+/** True in the iPhone/iPad build (and on a phone browser): no tray, no windows, no vault files. */
+export const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+if (isMobile) document.documentElement.classList.add('mobile');
+
 /* ---------------- settings ---------------- */
 
 export const DEFAULTS = {
@@ -284,6 +289,24 @@ export function vaultInfo(vault) {
 export function appendNote(vault, note, text) {
   if (!inTauri) return Promise.reject(new Error('Only available in the desktop app'));
   return tauri.core.invoke('append_note', { vault, note, text });
+}
+
+/** The vault's name: the last part of a folder path, or the name itself on iPhone. */
+export function vaultName(vault) {
+  return String(vault || '').trim().replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+}
+
+/**
+ * iPhone: hands the line to the Obsidian app through its obsidian:// link scheme.
+ * "daily" uses Obsidian's own Daily notes folder and date format; "inbox" appends to a note.
+ * Obsidian comes to the front to write it.
+ */
+export async function sendNoteToObsidian(vault, target, inbox, text) {
+  const q = new URLSearchParams({ vault: vaultName(vault), content: text });
+  if (target !== 'daily') q.set('file', String(inbox || 'Inbox.md').replace(/\.md$/i, ''));
+  // URLSearchParams writes spaces as "+", which Obsidian keeps literally.
+  const params = `${q.toString().replace(/\+/g, '%20')}&append=true&spacing=newline&silent=true`;
+  await openUrl(`obsidian://${target === 'daily' ? 'daily' : 'new'}?${params}`);
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];

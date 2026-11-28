@@ -1,16 +1,10 @@
-use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
-};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use tauri_plugin_autostart::MacosLauncher;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-use tauri_plugin_updater::UpdaterExt;
-use tauri_plugin_window_state::StateFlags;
+use tauri::AppHandle;
+#[cfg(desktop)]
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-/* ---------------- secrets (Windows Credential Manager) ---------------- */
+/* ---------------- secrets (Windows Credential Manager / iPhone Keychain) ---------------- */
 
 const SECRET_SERVICE: &str = "com.crowder.desk";
 
@@ -44,18 +38,22 @@ fn secret_delete(name: String) -> Result<(), String> {
     }
 }
 
-/* ---------------- updates ---------------- */
+/* ---------------- updates (desktop only; the iPhone build is reinstalled from GitHub) ---------------- */
 
 /// Returns the newer version on offer, if any.
+#[cfg(desktop)]
 #[tauri::command]
 async fn check_update(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_updater::UpdaterExt;
     let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
     Ok(update.map(|u| u.version))
 }
 
 /// Downloads and runs the signed installer, then restarts into the new version.
+#[cfg(desktop)]
 #[tauri::command]
 async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
     let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
     let Some(update) = update else { return Err("Already up to date.".into()) };
     update
@@ -63,6 +61,18 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     app.restart();
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+async fn check_update(_app: AppHandle) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+async fn install_update(_app: AppHandle) -> Result<(), String> {
+    Err("Updates for the iPhone app come from a new build on GitHub.".into())
 }
 
 #[derive(serde::Serialize)]
@@ -149,33 +159,10 @@ fn append_note(vault: String, note: String, text: String) -> Result<String, Stri
     Ok(rel)
 }
 
-fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-        // Lets the page lift an "on desktop" widget above other windows until it loses focus.
-        let _ = app.emit_to("main", "tray-action", "raise");
-    }
-}
-
-/// Ctrl+Alt+Space: bring the widget up (even after Win+D) with the cursor in Quick note.
-fn summon_shortcut() -> Shortcut {
-    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space)
-}
-
-fn toggle_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        if w.is_visible().unwrap_or(false) {
-            let _ = w.hide();
-        } else {
-            show_main(app);
-        }
-    }
-}
-
 /// Opens (or reuses) the recipe viewer window for a Plico recipe id.
 /// Async so window creation doesn't deadlock on Windows.
+/// Desktop only: on iPhone the page itself navigates to recipe.html.
+#[cfg(desktop)]
 #[tauri::command]
 async fn open_recipe(app: AppHandle, id: String) -> Result<(), String> {
     // Plico ids are slugs; keep only safe characters before putting the id in a script.
@@ -206,93 +193,154 @@ async fn open_recipe(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(mobile)]
+#[tauri::command]
+async fn open_recipe(_app: AppHandle, _id: String) -> Result<(), String> {
+    Err("Recipe windows are desktop only.".into())
+}
+
+/* ---------------- desktop shell: tray, Ctrl+Alt+Space, window state, autostart ---------------- */
+
+#[cfg(desktop)]
+mod desktop {
+    use tauri::{
+        menu::{Menu, MenuItem, PredefinedMenuItem},
+        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+        App, AppHandle, Builder, Emitter, Manager, Window, WindowEvent, Wry,
+    };
+    use tauri_plugin_autostart::MacosLauncher;
+    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+    use tauri_plugin_window_state::StateFlags;
+
+    pub fn show_main(app: &AppHandle) {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+            // Lets the page lift an "on desktop" widget above other windows until it loses focus.
+            let _ = app.emit_to("main", "tray-action", "raise");
+        }
+    }
+
+    /// Ctrl+Alt+Space: bring the widget up (even after Win+D) with the cursor in Quick note.
+    fn summon_shortcut() -> Shortcut {
+        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space)
+    }
+
+    fn toggle_main(app: &AppHandle) {
+        if let Some(w) = app.get_webview_window("main") {
+            if w.is_visible().unwrap_or(false) {
+                let _ = w.hide();
+            } else {
+                show_main(app);
+            }
+        }
+    }
+
+    /// Plugins only the desktop widget uses. Single-instance has to be registered first.
+    pub fn plugins(builder: Builder<Wry>) -> Builder<Wry> {
+        builder
+            // A second launch just brings the existing widget forward.
+            .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+                show_main(app);
+            }))
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(|app, shortcut, event| {
+                        if event.state() == ShortcutState::Pressed && shortcut == &summon_shortcut() {
+                            show_main(app);
+                            let _ = app.emit_to("main", "tray-action", "note");
+                        }
+                    })
+                    .build(),
+            )
+            .plugin(
+                tauri_plugin_window_state::Builder::default()
+                    .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
+                    .with_denylist(&["recipe"])
+                    .build(),
+            )
+            .plugin(tauri_plugin_autostart::init(
+                MacosLauncher::LaunchAgent,
+                Some(vec!["--autostart"]),
+            ))
+    }
+
+    /// Ctrl+Alt+Space and the tray icon.
+    pub fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+        // Another program may already own the shortcut; the widget still works without it.
+        if let Err(e) = app.global_shortcut().register(summon_shortcut()) {
+            eprintln!("Couldn't register Ctrl+Alt+Space: {e}");
+        }
+        let toggle = MenuItem::with_id(app, "toggle", "Show / hide widget", true, None::<&str>)?;
+        let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
+        let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+        let sep = PredefinedMenuItem::separator(app)?;
+        let quit = MenuItem::with_id(app, "quit", "Quit Crowder Desk", true, None::<&str>)?;
+        let menu = Menu::with_items(app, &[&toggle, &refresh, &settings, &sep, &quit])?;
+
+        let mut tray = TrayIconBuilder::with_id("crowder-desk-tray")
+            .tooltip("Crowder Desk")
+            .menu(&menu)
+            .show_menu_on_left_click(false)
+            .on_menu_event(|app, event| match event.id.as_ref() {
+                "toggle" => toggle_main(app),
+                "refresh" => {
+                    let _ = app.emit_to("main", "tray-action", "refresh");
+                }
+                "settings" => {
+                    show_main(app);
+                    let _ = app.emit_to("main", "tray-action", "settings");
+                }
+                "quit" => app.exit(0),
+                _ => {}
+            })
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    toggle_main(tray.app_handle());
+                }
+            });
+        if let Some(icon) = app.default_window_icon() {
+            tray = tray.icon(icon.clone());
+        }
+        tray.build(app)?;
+        Ok(())
+    }
+
+    /// Closing the widget (Alt+F4) hides it to the tray instead of quitting.
+    pub fn on_window_event(window: &Window, event: &WindowEvent) {
+        if window.label() == "main" {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // A second launch just brings the existing widget forward.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main(app);
-        }))
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = desktop::plugins(builder);
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, shortcut, event| {
-                    if event.state() == ShortcutState::Pressed && shortcut == &summon_shortcut() {
-                        show_main(app);
-                        let _ = app.emit_to("main", "tray-action", "note");
-                    }
-                })
-                .build(),
-        )
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
-                .with_denylist(&["recipe"])
-                .build(),
-        )
-        .plugin(tauri_plugin_autostart::init(
-            MacosLauncher::LaunchAgent,
-            Some(vec!["--autostart"]),
-        ))
         .invoke_handler(tauri::generate_handler![
             open_recipe, vault_info, append_note,
             secret_get, secret_set, secret_delete,
             check_update, install_update
-        ])
-        .setup(|app| {
-            // Another program may already own the shortcut; the widget still works without it.
-            if let Err(e) = app.global_shortcut().register(summon_shortcut()) {
-                eprintln!("Couldn't register Ctrl+Alt+Space: {e}");
-            }
-            let toggle = MenuItem::with_id(app, "toggle", "Show / hide widget", true, None::<&str>)?;
-            let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
-            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            let sep = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Crowder Desk", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&toggle, &refresh, &settings, &sep, &quit])?;
-
-            let mut tray = TrayIconBuilder::with_id("crowder-desk-tray")
-                .tooltip("Crowder Desk")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "toggle" => toggle_main(app),
-                    "refresh" => {
-                        let _ = app.emit_to("main", "tray-action", "refresh");
-                    }
-                    "settings" => {
-                        show_main(app);
-                        let _ = app.emit_to("main", "tray-action", "settings");
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        toggle_main(tray.app_handle());
-                    }
-                });
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
-            }
-            tray.build(app)?;
-            Ok(())
-        })
-        .on_window_event(|window, event| {
-            // Closing the widget (Alt+F4) hides it to the tray instead of quitting.
-            if window.label() == "main" {
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-            }
-        })
+        ]);
+    #[cfg(desktop)]
+    let builder = builder
+        .setup(|app| desktop::setup(app))
+        .on_window_event(desktop::on_window_event);
+    builder
         .run(tauri::generate_context!())
         .expect("error while running Crowder Desk");
 }

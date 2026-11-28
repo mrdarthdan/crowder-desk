@@ -74,6 +74,20 @@ The tag build checks that the version matches the tag, then publishes the releas
 
 To build signed update files locally, set `$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw $env:USERPROFILE.tauricrowder-desk.key` before `npm run build`.
 
+## iPhone (sideloaded test build)
+
+The `ios` branch also builds an iPhone app from the same code. Every push to `ios` runs **Actions → Build iOS app**, which makes an unsigned `CrowderDesk.ipa` (in the run's artifacts, kept 30 days). No Mac or paid Apple account needed.
+
+To install it from Windows:
+
+1. Install **iTunes from apple.com** (not the Microsoft Store version) and **Sideloadly**.
+2. Plug in the iPhone, drag `CrowderDesk.ipa` into Sideloadly, sign in with your Apple ID, and press Start.
+3. On the iPhone: Settings → General → VPN & Device Management → your Apple ID → **Trust**. Developer Mode may also need turning on (Settings → Privacy & Security → Developer Mode).
+
+A free Apple ID signature lasts **7 days**. Re-sign before then (Sideloadly again, or let AltStore refresh it over Wi-Fi). Install a new build over the old one rather than deleting the app, so settings and the sign-in stay.
+
+What's different on iPhone: it's a normal full-screen app (no tray, placement, opacity, autostart, Ctrl+Alt+Space or auto-updates). Recipes open in the same screen with a back button. **Quick note** opens the Obsidian app to add the line, through Obsidian's `obsidian://daily` / `obsidian://new` links with `append`; Daily uses Obsidian's own Daily notes settings. In Settings, enter the vault's name as it appears in Obsidian on the phone. Secrets go in the iPhone Keychain.
+
 ## Where the data comes from
 
 | Card | Source | Access |

@@ -1,4 +1,4 @@
-import { fetchRecipe, fetchSections, openUrl, esc, KITCHEN_URL } from './api.js';
+import { fetchRecipe, fetchSections, openUrl, esc, isMobile, KITCHEN_URL } from './api.js';
 import { ui } from './icons.js';
 
 const root = document.getElementById('rp');
@@ -62,6 +62,14 @@ async function loadRecipe(id) {
         ${/^https?:\/\//.test(r.source_url || '') ? `<button class="btn" id="rp-src">${ui.ext}Original source</button>` : ''}
         <button class="btn" id="rp-kitchen">${ui.ext}Open Crowder Kitchen</button>
       </div>`;
+    if (isMobile) {
+      // On iPhone the recipe replaces the widget screen, so it needs a way back.
+      const back = document.createElement('button');
+      back.className = 'btn rp-back';
+      back.textContent = '‹ Crowder Desk';
+      back.addEventListener('click', () => { location.href = 'index.html'; });
+      root.prepend(back);
+    }
     document.getElementById('rp-kitchen').addEventListener('click', () => openUrl(KITCHEN_URL));
     document.getElementById('rp-src')?.addEventListener('click', () => openUrl(r.source_url));
     window.scrollTo(0, 0);

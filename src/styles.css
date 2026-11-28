@@ -347,3 +347,20 @@ body.reordering, body.reordering * { cursor: grabbing !important; user-select: n
 .sp-outing span { display: block; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 2px; }
 .sp-outing b { color: var(--ink); font-weight: 600; }
 .sp-outing small { display: block; color: var(--ink-3); font-size: 11px; margin-top: 2px; }
+
+/* ---------- iPhone ---------- */
+html:not(.mobile) .mobile-only, .mobile .desktop-only { display: none !important; }
+html.mobile, .mobile body { background: #141218; }
+.mobile body { font-size: 14px; -webkit-tap-highlight-color: transparent; }
+.mobile .shell {
+  border-radius: 0; border: 0;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+.mobile .scroll { padding-bottom: calc(14px + env(safe-area-inset-bottom)); -webkit-overflow-scrolling: touch; }
+.mobile .sheet { border-radius: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+.mobile .icon-btn { width: 38px; height: 38px; }
+.mobile .icon-btn svg { width: 19px; height: 19px; }
+/* 16px stops iOS zooming the page when a field gets focus. */
+.mobile input, .mobile select, .mobile textarea { font-size: 16px; }
+.mobile .recipe-page .rp { padding: calc(14px + env(safe-area-inset-top)) 18px calc(30px + env(safe-area-inset-bottom)); }
+.rp-back { margin-bottom: 14px; }

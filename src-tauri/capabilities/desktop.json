@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "Desktop-only permissions: moving and layering the widget, autostart, window position",
+  "platforms": ["windows", "macOS", "linux"],
+  "windows": ["main", "recipe"],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-always-on-bottom",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "autostart:default",
+    "window-state:default"
+  ]
+}
