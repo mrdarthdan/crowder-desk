@@ -95,7 +95,9 @@ The iPhone build includes a WidgetKit widget (`ios-widget/`). Add it like any wi
 - **Lock screen:** one line above the clock (temperature and the next golden or blue hour), a circle (icon and temperature), or a rectangle (conditions, high and low, next light).
 - **Home screen:** small (weather and next light), medium (adds the light windows, sunrise or sunset, and a 3-day forecast), large (adds the recipe of the day and a Picket Station headline, a different one each hour).
 
-The widget fetches its own data (Open-Meteo and the public Supabase tables), refreshes about every 30 minutes, and keeps the last good data if a refresh fails. Its location is Mesa, set in `ios-widget/Sources/DeskData.swift`; it can't read the app's settings yet. Tauri has no setting for app extensions, so `scripts/ios-add-widget.py` adds the widget target to the generated Xcode project during the build.
+A second widget, **Crowder Desk Plans** (medium, large, lock screen rectangle), shows your next Blog Plan tasks and Shoot Planner outing.
+
+The widget fetches its own data, refreshes about every 30 minutes, and keeps the last good data if a refresh fails. The app shares its location, units, news desk and Blog Plan session with the widget through `shared.json` in an App Group folder. The widget renews the session when it runs out and writes it back, and whichever side changed it last wins. Sideloading tools rename the App Group when they re-sign, so both look up the real name in the provisioning profile (Sideloadly) or `ALTAppGroups` (AltStore). If an install gets no App Group (some reports say Sideloadly with a free Apple ID grants none), Settings → Widget says so and the widget falls back to Mesa without the Plans data; installing with AltStore should fix that. The build ad-hoc signs the app and widget with `ios-widget/*.entitlements` so the tools see the request. Tauri has no setting for app extensions, so `scripts/ios-add-widget.py` adds the widget target to the generated Xcode project during the build.
 
 ## Where the data comes from
 
