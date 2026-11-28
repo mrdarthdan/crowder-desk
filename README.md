@@ -88,6 +88,15 @@ A free Apple ID signature lasts **7 days**. Re-sign before then (Sideloadly agai
 
 What's different on iPhone: it's a normal full-screen app (no tray, placement, opacity, autostart, Ctrl+Alt+Space or auto-updates). Recipes open in the same screen with a back button. **Quick note** opens the Obsidian app to add the line, through Obsidian's `obsidian://daily` / `obsidian://new` links with `append`; Daily uses Obsidian's own Daily notes settings. In Settings, enter the vault's name as it appears in Obsidian on the phone. Secrets go in the iPhone Keychain.
 
+### iPhone widget
+
+The iPhone build includes a WidgetKit widget (`ios-widget/`). Add it like any widget: long-press the home screen or lock screen → Edit → Add Widget → Crowder Desk.
+
+- **Lock screen:** one line above the clock (temperature and the next golden or blue hour), a circle (icon and temperature), or a rectangle (conditions, high and low, next light).
+- **Home screen:** small (weather and next light), medium (adds the light windows, sunrise or sunset, and a 3-day forecast), large (adds the recipe of the day and a Picket Station headline, a different one each hour).
+
+The widget fetches its own data (Open-Meteo and the public Supabase tables), refreshes about every 30 minutes, and keeps the last good data if a refresh fails. Its location is Mesa, set in `ios-widget/Sources/DeskData.swift`; it can't read the app's settings yet. Tauri has no setting for app extensions, so `scripts/ios-add-widget.py` adds the widget target to the generated Xcode project during the build.
+
 ## Where the data comes from
 
 | Card | Source | Access |
